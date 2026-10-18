@@ -24,11 +24,16 @@ function oauthStartUrl(shop, state) {
 
 // Verify the hmac on an OAuth callback / embedded-app request.
 function verifyOauthHmac(query) {
-  const { hmac, ...rest } = query;
+  const { hmac, signature, ...rest } = query;
   if (!hmac) return false;
-  const msg = Object.keys(rest).sort().map((k) => `${k}=${rest[k]}`).join('&');
-  const digest = crypto.createHmac('sha256', config.shopify.apiSecret).update(msg).digest('hex');
-  return safeEqual(digest, hmac);
+  const keys = Object.keys(rest).sort();
+  // Shopify documents an escaped form (& % = in keys/values → %26 %25 %3D); accept plain or escaped.
+  const esc = (s) => String(s).replace(/%/g, '%25').replace(/&/g, '%26').replace(/=/g, '%3D');
+  const variants = [
+    keys.map((k) => `${k}=${rest[k]}`).join('&'),
+    keys.map((k) => `${esc(k)}=${esc(rest[k])}`).join('&'),
+  ];
+  return variants.some((msg) => safeEqual(crypto.createHmac('sha256', config.shopify.apiSecret).update(msg).digest('hex'), hmac));
 }
 
 async function exchangeToken(shop, code) {

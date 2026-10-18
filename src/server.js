@@ -174,8 +174,12 @@ async function handleAuth(req, res, url) {
 async function handleAuthCallback(req, res, url) {
   const q = queryObject(url);
   const st = oauthStates.take(q.state || '');
-  if (!st || st.shop !== q.shop || !shopify.isValidShop(q.shop) || !shopify.verifyOauthHmac(q)) {
-    return send(res, 400, views.page('Install', '<h1>Invalid install request</h1><p>Start again from <code>/auth?shop=…</code></p>'));
+  const reason = !q.state ? 'no state in callback' : !st ? 'state not found (expired, already used, or issued by a previous deploy)'
+    : st.shop !== q.shop ? `shop mismatch (${st.shop} vs ${q.shop})` : !shopify.isValidShop(q.shop) ? 'invalid shop'
+    : !shopify.verifyOauthHmac(q) ? 'hmac mismatch (check SHOPIFY_API_SECRET)' : null;
+  if (reason) {
+    log('oauth callback rejected:', reason, 'params:', Object.keys(q).join(','));
+    return send(res, 400, views.page('Install', `<h1>Invalid install request</h1><p>${views.esc(reason)}.</p><p>Start again from <code>/auth?shop=${views.esc(q.shop || '…')}</code></p>`));
   }
   try {
     const tok = await shopify.exchangeToken(q.shop, q.code);
