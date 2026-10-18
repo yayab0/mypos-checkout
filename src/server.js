@@ -55,8 +55,8 @@ function basicAuthOk(req) {
 // ---------- the checkout flow ----------
 
 // GET /proxy  (store.com/apps/pay)
-function handleCheckoutPage(res, shopRow, error) {
-  if (config.mypos.mode === 'embedded') return sendLiquid(res, views.singlePageLiquid({ shopRow, error }));
+function handleCheckoutPage(res, shopRow, error, attrs = {}) {
+  if (config.mypos.mode === 'embedded') return sendLiquid(res, views.singlePageLiquid({ shopRow, error, attrs }));
   sendLiquid(res, views.checkoutLiquid({ shopRow, error }));
 }
 
@@ -75,7 +75,16 @@ function customerFromFields(fields) {
 const customerComplete = (c) => !!(c.email && /.+@.+\..+/.test(c.email) && c.firstName && c.lastName && c.address && c.city && c.zip);
 
 // Re-price the cart from Shopify and create the order record. Returns the order row or throws.
-async function createOrderFromCart(shopRow, items, customer) {
+function attrsFromFields(fields) {
+  const clean = (v) => String(v || '').trim().slice(0, 256);
+  const a = {};
+  if (clean(fields.ref)) a.ref = clean(fields.ref).toUpperCase();
+  if (/^[\w-]{1,256}$/.test(clean(fields.gclid))) a.gclid = clean(fields.gclid);
+  if (clean(fields.source)) a.source = clean(fields.source);
+  return a;
+}
+
+async function createOrderFromCart(shopRow, items, customer, attrs = {}) {
   const cart = await shopify.priceCart(shopRow, items);
   const currency = shopRow.currency || 'GBP';
   const lines = cart.map((c) => ({ title: c.title, quantity: c.quantity, price: c.price }));
@@ -83,7 +92,7 @@ async function createOrderFromCart(shopRow, items, customer) {
   if (shipAmount > 0) lines.push({ title: shopRow.shipping_label || 'Shipping', quantity: 1, price: shipAmount });
   const orderId = newOrderId();
   const total = mypos.money(lines.reduce((s, l) => s + Number(l.price) * Number(l.quantity), 0));
-  const row = orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(total), currency, cart, customer });
+  const row = orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(total), currency, cart, customer, attrs });
   log('order created', orderId, shopRow.shop, total, currency, config.mypos.mode);
   return row;
 }
@@ -97,7 +106,7 @@ async function handleStart(req, res, shopRow) {
   if (!Array.isArray(items) || !items.length) return sendJson(res, 400, { error: 'Your cart is empty.' });
   if (!mypos.isConfigured()) return sendJson(res, 503, { error: 'Payments are not configured yet.' });
   let order;
-  try { order = await createOrderFromCart(shopRow, items, customerFromFields(fields)); }
+  try { order = await createOrderFromCart(shopRow, items, customerFromFields(fields), attrsFromFields(fields)); }
   catch (e) { log('start failed', shopRow.shop, e.message); return sendJson(res, 400, { error: 'We could not verify your cart. Please refresh and try again.' }); }
   sendJson(res, 200, { orderId: order.order_id, amount: order.amount, currency: order.currency, ...views.embeddedParams({ order, shopRow, creds: mypos.credentials() }) });
 }
@@ -182,7 +191,7 @@ async function handleCreate(req, res, shopRow) {
   if (!customerComplete(customer)) return handleCheckoutPage(res, shopRow, 'Please fill in all required fields.');
 
   let order;
-  try { order = await createOrderFromCart(shopRow, items, customer); }
+  try { order = await createOrderFromCart(shopRow, items, customer, attrsFromFields(fields)); }
   catch (e) { log('priceCart failed', shopRow.shop, e.message); return handleCheckoutPage(res, shopRow, 'We could not verify your cart. Please try again.'); }
   const orderId = order.order_id;
 
@@ -264,6 +273,7 @@ async function createShopifyOrder(orderId) {
       order, cart, customer,
       shipping: { label: shopRow.shipping_label, amount: shopRow.shipping_amount },
       ipcTrnref: order.ipc_trnref, cardLast4: order.card_last4,
+      attrs: JSON.parse(order.attrs_json || '{}'),
     });
     orders.setShopifyOrder(orderId, created.id, created.name);
     log('shopify order created', orderId, created.name);
@@ -357,7 +367,7 @@ async function handleAdmin(req, res, url) {
       }
     } catch (e) { flash = { ok: false, msg: e.message }; }
   }
-  send(res, 200, views.adminHtml({ shops: shops.all(), orders: orders.recent(100), myposStatus: mypos.credentials(), flash }));
+  send(res, 200, views.adminHtml({ shops: shops.all(), orders: orders.recent(100), abandoned: orders.abandoned(200), myposStatus: mypos.credentials(), flash }));
 }
 
 // ---------- router ----------
@@ -381,8 +391,9 @@ async function route(req, res) {
     const sub = p.slice('/proxy'.length) || '/';
     if (sub === '/' && req.method === 'GET') {
       const items = url.searchParams.get('items');
-      if (items) return sendLiquid(res, views.importCartLiquid({ items }));
-      return handleCheckoutPage(res, shopRow);
+      const attrs = { ref: url.searchParams.get('ref') || '', gclid: url.searchParams.get('gclid') || '', source: url.searchParams.get('source') || '' };
+      if (items) return sendLiquid(res, views.importCartLiquid({ items, attrs }));
+      return handleCheckoutPage(res, shopRow, undefined, attrs);
     }
     if (sub === '/resolve' && req.method === 'POST') return handleResolve(req, res, shopRow);
     if (sub === '/create' && req.method === 'POST') return handleCreate(req, res, shopRow);

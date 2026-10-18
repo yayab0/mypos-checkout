@@ -106,7 +106,8 @@ async function resolveItems(shopRow, specs) {
   for (const s of specs.slice(0, 50)) {
     const quantity = Math.max(1, Math.min(999, parseInt(s.q, 10) || 1));
     let id = null;
-    if (s.sku) {
+    if (s.id && /^\d+$/.test(String(s.id))) id = String(s.id); // variant id from a same-catalogue store (redirect app)
+    if (!id && s.sku) {
       const d = await graphql(shopRow, `query($q:String!){ productVariants(first:1, query:$q){ nodes { id legacyResourceId } } }`, { q: `sku:"${String(s.sku).replace(/"/g, '')}"` });
       id = d.productVariants.nodes[0]?.legacyResourceId || null;
     }
@@ -123,7 +124,7 @@ async function resolveItems(shopRow, specs) {
 }
 
 // Create the paid order after myPOS confirms payment.
-async function createPaidOrder(shopRow, { order, cart, customer, shipping, ipcTrnref, cardLast4 }) {
+async function createPaidOrder(shopRow, { order, cart, customer, shipping, ipcTrnref, cardLast4, attrs }) {
   const money = (n) => ({ shopMoney: { amount: (Math.round(Number(n) * 100) / 100).toFixed(2), currencyCode: order.currency } });
   const addr = {
     firstName: customer.firstName || '', lastName: customer.lastName || '',
@@ -147,7 +148,9 @@ async function createPaidOrder(shopRow, { order, cart, customer, shipping, ipcTr
       amountSet: money(order.amount), authorizationCode: ipcTrnref || null,
       processedAt: new Date().toISOString(),
     }],
-    customAttributes: [{ key: 'myPOS OrderID', value: order.order_id }],
+    customAttributes: [{ key: 'myPOS OrderID', value: order.order_id }].concat(
+      Object.entries(attrs || {}).filter(([k, v]) => v && ['ref', 'gclid', 'source'].includes(k)).map(([k, v]) => ({ key: k, value: String(v).slice(0, 250) }))
+    ),
   };
   if (shipping && Number(shipping.amount) > 0) {
     input.shippingLines = [{ title: shipping.label || 'Shipping', code: 'MYPOS_FLAT', priceSet: money(shipping.amount) }];

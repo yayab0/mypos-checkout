@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS orders (
   shopify_order_name TEXT,
   shopify_error     TEXT,
   refunded_amount   REAL DEFAULT 0,
+  attrs_json        TEXT DEFAULT '{}',          -- {ref, gclid, source} from the referring store
   created_at        TEXT NOT NULL,
   paid_at           TEXT,
   updated_at        TEXT NOT NULL
@@ -47,6 +48,8 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   created_at TEXT NOT NULL
 );
 `);
+
+try { db.exec("ALTER TABLE orders ADD COLUMN attrs_json TEXT DEFAULT '{}'"); } catch { /* already there */ }
 
 const now = () => new Date().toISOString();
 
@@ -73,10 +76,13 @@ const shops = {
 const orders = {
   get: (id) => db.prepare('SELECT * FROM orders WHERE order_id = ?').get(id) || null,
   recent: (limit = 100) => db.prepare('SELECT * FROM orders ORDER BY created_at DESC LIMIT ?').all(limit),
+  // Started but never paid, with an email captured — for abandoned-checkout follow-up.
+  abandoned: (limit = 200) => db.prepare(`SELECT * FROM orders WHERE status IN ('created','cancelled') AND customer_json LIKE '%"email":"_%' AND created_at < ? ORDER BY created_at DESC LIMIT ?`)
+    .all(new Date(Date.now() - 30 * 60e3).toISOString(), limit),
   create(o) {
-    db.prepare(`INSERT INTO orders (order_id, shop, status, amount, currency, cart_json, customer_json, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(o.order_id, o.shop, 'created', o.amount, o.currency, JSON.stringify(o.cart), JSON.stringify(o.customer), now(), now());
+    db.prepare(`INSERT INTO orders (order_id, shop, status, amount, currency, cart_json, customer_json, attrs_json, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(o.order_id, o.shop, 'created', o.amount, o.currency, JSON.stringify(o.cart), JSON.stringify(o.customer), JSON.stringify(o.attrs || {}), now(), now());
     return orders.get(o.order_id);
   },
   setCustomer(id, customer) {

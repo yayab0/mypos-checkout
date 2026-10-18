@@ -104,7 +104,7 @@ function embeddedParams({ order, shopRow, creds }) {
 }
 
 // Single-page checkout (embedded mode): details + myPOS card form + one Pay button, in the theme.
-function singlePageLiquid({ shopRow, error }) {
+function singlePageLiquid({ shopRow, error, attrs = {} }) {
   const ship = Number(shopRow.shipping_amount || 0);
   const P = config.proxyPath;
   return `${CSS}
@@ -174,7 +174,7 @@ function singlePageLiquid({ shopRow, error }) {
     function loadSdk(url){ return new Promise(function(res, rej){ if (window.MyPOSEmbedded) return res(); var s = document.createElement('script'); s.src = url; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
     function valid(){ var f = fields(); var missing = ['email','firstName','lastName','address','city','zip'].filter(function(k){ return !String(f[k]||'').trim(); }); if (missing.length || !/.+@.+\\..+/.test(f.email)) { showErr('Please fill in your email and delivery address.'); form.querySelector('[name="'+(missing[0]||'email')+'"]').focus(); return null; } return f; }
 
-    post('/start', { cart: JSON.stringify(items) }).then(function(j){
+    post('/start', Object.assign({ cart: JSON.stringify(items) }, ${JSON.stringify({ ref: attrs.ref || '', gclid: attrs.gclid || '', source: attrs.source || '' })})).then(function(j){
       orderId = j.orderId; sandbox = !!j.isSandbox;
       return loadSdk(j.sdkUrl).then(function(){
         return MyPOSEmbedded.createPaymentForm('myPOSEmbeddedCheckout', j.params, {
@@ -230,7 +230,7 @@ function singlePageLiquid({ shopRow, error }) {
 }
 
 // Landing page for carts sent from another store: resolve the items here, fill this store's cart, open checkout.
-function importCartLiquid({ items }) {
+function importCartLiquid({ items, attrs = {} }) {
   const P = config.proxyPath;
   return `${CSS}
 <div class="mpc" style="grid-template-columns:1fr;max-width:640px">
@@ -251,7 +251,7 @@ function importCartLiquid({ items }) {
       if (!j.items || !j.items.length) return fail('These products are not available in this store.');
       return fetch('/cart/clear.js', { method:'POST' })
         .then(function(){ return fetch('/cart/add.js', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ items: j.items.map(function(i){ return { id: i.id, quantity: i.quantity }; }) }) }); })
-        .then(function(r){ if (!r.ok) throw new Error('add'); window.location.replace(P); });
+        .then(function(r){ if (!r.ok) throw new Error('add'); window.location.replace(P + ${JSON.stringify(((a) => { const q = new URLSearchParams(); for (const [k, v] of Object.entries(a)) if (v) q.set(k, v); const str = q.toString(); return str ? '?' + str : ''; })({ ref: String(attrs.ref || '').slice(0, 64), gclid: String(attrs.gclid || '').slice(0, 256), source: String(attrs.source || '').slice(0, 128) }))}); });
     })
     .catch(function(){ fail('Please try again.'); });
 })();
@@ -347,7 +347,7 @@ input,select{padding:8px;border:1px solid #cfd4db;border-radius:6px;font:inherit
 <body><div class="wrap">${body}</div></body></html>`;
 }
 
-function adminHtml({ shops, orders, myposStatus, flash }) {
+function adminHtml({ shops, orders, abandoned = [], myposStatus, flash }) {
   const fmt = (n, c) => `${Number(n).toFixed(2)} ${c}`;
   const shopRows = shops.map((s) => `
     <tr><td><strong>${esc(s.name || s.shop)}</strong><br><span class="muted">${esc(s.shop)}</span></td>
@@ -365,7 +365,7 @@ function adminHtml({ shops, orders, myposStatus, flash }) {
     const canRefund = o.status === 'paid' && o.ipc_trnref && Number(o.refunded_amount || 0) < Number(o.amount);
     return `
     <tr><td><code>${esc(o.order_id)}</code><br><span class="muted">${esc(o.created_at.replace('T', ' ').slice(0, 16))}</span></td>
-      <td>${esc(o.shop.replace('.myshopify.com', ''))}</td>
+      <td>${esc(o.shop.replace('.myshopify.com', ''))}${(() => { const a = JSON.parse(o.attrs_json || '{}'); return a.source || a.ref ? `<br><span class="muted">from ${esc(a.source || a.ref)}</span>` : ''; })()}</td>
       <td>${esc(c.firstName || '')} ${esc(c.lastName || '')}<br><span class="muted">${esc(c.email || '')}</span></td>
       <td>${cart.map((i) => `${esc(i.title)} ×${i.quantity}`).join('<br>')}</td>
       <td>${fmt(o.amount, o.currency)}${Number(o.refunded_amount) > 0 ? `<br><span class="muted">refunded ${fmt(o.refunded_amount, o.currency)}</span>` : ''}</td>
@@ -389,6 +389,11 @@ function adminHtml({ shops, orders, myposStatus, flash }) {
     </div>
     <h2>Stores (${shops.length})</h2>
     <table><tr><th>Store</th><th>Checkout URL</th><th>Currency</th><th>Flat shipping</th><th>Installed</th></tr>${shopRows || '<tr><td colspan="5" class="muted">No stores installed yet.</td></tr>'}</table>
+    <h2>Abandoned checkouts (${abandoned.length}) <span class="muted" style="font-weight:400;font-size:.8em">— started, email entered, not paid after 30 min</span></h2>
+    <table><tr><th>When</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>From</th></tr>${abandoned.map((o) => { const c = JSON.parse(o.customer_json || '{}'); const a = JSON.parse(o.attrs_json || '{}'); const cart = JSON.parse(o.cart_json || '[]'); return `
+      <tr><td class="muted">${esc(o.created_at.replace('T', ' ').slice(0, 16))}</td><td>${esc(o.shop.replace('.myshopify.com', ''))}</td>
+      <td>${esc(c.firstName || '')} ${esc(c.lastName || '')}<br><a href="mailto:${esc(c.email || '')}">${esc(c.email || '')}</a>${c.phone ? `<br><span class="muted">${esc(c.phone)}</span>` : ''}</td>
+      <td>${cart.map((i) => `${esc(i.title)} ×${i.quantity}`).join('<br>')}</td><td>${fmt(o.amount, o.currency)}</td><td class="muted">${esc(a.source || a.ref || '')}</td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">None.</td></tr>'}</table>
     <h2>Orders (latest ${orders.length})</h2>
     <table><tr><th>Ref</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Shopify</th><th>Refund</th></tr>${orderRows || '<tr><td colspan="8" class="muted">No orders yet.</td></tr>'}</table>`);
 }

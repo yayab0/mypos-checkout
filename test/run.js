@@ -126,7 +126,7 @@ function proxyQuery(params) {
   // 11. single-page checkout: page has the form + pay button; /start creates the order and returns SDK params; /details saves the address
   const sp = await fetch(`${base}/proxy?${q}`); const spHtml = await sp.text();
   assert.match(spHtml, /MyPOSEmbedded\.createPaymentForm/); assert.match(spHtml, /id="btn-pay"/); assert.match(spHtml, /\/start/);
-  const st = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ cart: JSON.stringify([{ variantId: 111, quantity: 2 }, { variantId: 222, quantity: 1 }]) }).toString() });
+  const st = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ cart: JSON.stringify([{ variantId: 111, quantity: 2 }, { variantId: 222, quantity: 1 }]), ref: 'abc123', gclid: 'Cj0KCQ', source: 'Game Exchange' }).toString() });
   assert.equal(st.status, 200); const sj = await st.json();
   assert.ok(sj.orderId.startsWith('MP')); assert.equal(sj.params.amount, 40.95); assert.equal(sj.params.orderID, sj.orderId); assert.equal(sj.params.cartItems.length, 3); assert.equal(sj.isSandbox, true);
   const d1 = await fetch(`${base}/proxy/details?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId, email: 'x' }).toString() });
@@ -148,6 +148,7 @@ function proxyQuery(params) {
   assert.equal((await cf.json()).paid, true);
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(orders.get(sj.orderId).status, 'paid'); assert.equal(orders.get(sj.orderId).ipc_trnref, '555'); assert.equal(createdOrders.length, 2);
+  assert.deepEqual(createdOrders[1].attrs, { ref: 'ABC123', gclid: 'Cj0KCQ', source: 'Game Exchange' });
 
   // 13. cross-store cart: landing page with items param, and /resolve mapping SKU/handle -> this store's variants
   shopify.resolveItems = async (_shop, specs) => specs.map((s) => (s.sku === 'GEN-10KW' ? { id: 777, quantity: Number(s.q) } : s.handle === 'shed' ? { id: 888, quantity: Number(s.q) } : { unresolved: s, quantity: Number(s.q) }));
