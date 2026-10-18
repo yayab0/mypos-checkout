@@ -16,7 +16,11 @@
     var body = new URLSearchParams();
     fd.forEach(function (v, k) { body.append(k, v); });
     if (!body.get('quantity')) body.append('quantity', '1');
-    fetch('/cart/add.js', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body.toString() })
+    // Like Shopify's own Buy it now: start from an empty cart so only this product is bought.
+    fetch('/cart/clear.js', { method: 'POST' })
+      .then(function () {
+        return fetch('/cart/add.js', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body.toString() });
+      })
       .then(go, go);
   }
 
