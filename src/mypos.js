@@ -235,6 +235,7 @@ async function refund({ orderId, ipcTrnref, amount, currency }) {
   return { ok: !!ok, response: r.json || r.text };
 }
 
+// Returns { ok, paid, status, data } — paid is true only when myPOS says PaymentStatus 1 (successful).
 async function paymentStatus({ orderId }) {
   const c = credentials();
   const p = baseServerParams('IPCGetPaymentStatus');
@@ -242,12 +243,48 @@ async function paymentStatus({ orderId }) {
   p.push(['OutputFormat', 'json']);
   p.push(['Signature', sign(p, c.privateKey)]);
   const r = await ipcPost(p);
-  return r.json || r.text;
+  const d = r.json || {};
+  const ok = String(d.Status) === '0';
+  return { ok, paid: ok && String(d.PaymentStatus) === '1', status: d.PaymentStatus, data: r.json || r.text };
+}
+
+// Payment session for the embedded Apple Pay / Google Pay buttons (IPCPaymentSessionCreate). Returns the SessionToken.
+async function paymentSessionCreate({ orderId, currency, cart, note }) {
+  const c = credentials();
+  const total = cart.reduce((s, it) => s + Number(it.price) * Number(it.quantity), 0);
+  const p = [
+    ['IPCmethod', 'IPCPaymentSessionCreate'],
+    ['IPCVersion', config.mypos.version],
+    ['IPCLanguage', config.mypos.lang],
+    ['OrderID', orderId],
+    ['Amount', money(total)],
+    ['Currency', currency],
+    ['SID', c.sid],
+    ['WalletNumber', c.wallet],
+    ['KeyIndex', c.keyIndex],
+    ['RequestToken', '0'],
+    ['Note', note || ''],
+    ['CartItems', String(cart.length)],
+  ];
+  cart.forEach((it, i) => {
+    const n = i + 1;
+    p.push([`Article_${n}`, String(it.title).slice(0, 120)]);
+    p.push([`Quantity_${n}`, String(it.quantity)]);
+    p.push([`Price_${n}`, money(it.price)]);
+    p.push([`Amount_${n}`, money(Number(it.price) * Number(it.quantity))]);
+    p.push([`Currency_${n}`, currency]);
+  });
+  p.push(['OutputFormat', 'json']);
+  p.push(['Signature', sign(p, c.privateKey)]);
+  const r = await ipcPost(p);
+  const d = r.json || {};
+  if (String(d.Status) !== '0' || !d.SessionToken) throw new Error(`Payment session failed: ${d.StatusMsg || r.text.slice(0, 200)}`);
+  return { sessionToken: d.SessionToken, expires: d.ExpDate };
 }
 
 module.exports = {
   credentials, isConfigured, parseConfigPack,
   sign, verify, verifyCallback, signatureBase,
-  buildPurchaseParams, purchaseFormHtml, refund, paymentStatus, money,
+  buildPurchaseParams, purchaseFormHtml, refund, paymentStatus, paymentSessionCreate, money,
   LIVE_URL, SANDBOX_URL,
 };

@@ -134,6 +134,11 @@ function singlePageLiquid({ shopRow, error }) {
         <label>Country</label><select name="country" autocomplete="country">${countries.options('GB')}</select>
         <label>Phone (optional)</label><input name="phone" type="tel" autocomplete="tel">
         <div class="sect">Payment</div>
+        <div id="mpcWallet" style="display:none;position:relative;margin-bottom:14px">
+          <div id="embeddedButtons"></div>
+          <div id="mpcWalletOverlay" title="Enter your details above first" style="position:absolute;inset:0;background:rgba(255,255,255,.55);cursor:not-allowed;border-radius:8px"></div>
+          <div style="text-align:center;font-size:.8em;opacity:.6;margin:10px 0 4px">— or pay by card —</div>
+        </div>
         <div id="myPOSEmbeddedCheckout"><div class="wait" id="mpcWait">Loading secure card form…</div></div>
         <button class="btn" type="button" id="btn-pay" disabled>Pay {{ cart.total_price | plus: ${Math.round(ship * 100)} | money }}</button>
         <a class="alt" href="#" id="mpcHosted">Apple Pay / Google Pay →</a>
@@ -161,7 +166,7 @@ function singlePageLiquid({ shopRow, error }) {
     var P = ${JSON.stringify(P)};
     var items = [{% for item in cart.items %}{"variantId":{{ item.variant_id }},"quantity":{{ item.quantity }}}{% unless forloop.last %},{% endunless %}{% endfor %}];
     var form = document.getElementById('mpcForm'), btn = document.getElementById('btn-pay'), err = document.getElementById('mpcErr'), wait = document.getElementById('mpcWait');
-    var orderId = null, payment = null, busy = false;
+    var orderId = null, payment = null, busy = false, sandbox = false;
     function showErr(m){ err.textContent = m; err.style.display = 'block'; window.scrollTo({top: err.getBoundingClientRect().top + window.scrollY - 80, behavior: 'smooth'}); }
     function hideErr(){ err.style.display = 'none'; }
     function fields(){ var o = {}; new FormData(form).forEach(function(v,k){ o[k] = v; }); return o; }
@@ -170,7 +175,7 @@ function singlePageLiquid({ shopRow, error }) {
     function valid(){ var f = fields(); var missing = ['email','firstName','lastName','address','city','zip'].filter(function(k){ return !String(f[k]||'').trim(); }); if (missing.length || !/.+@.+\\..+/.test(f.email)) { showErr('Please fill in your email and delivery address.'); form.querySelector('[name="'+(missing[0]||'email')+'"]').focus(); return null; } return f; }
 
     post('/start', { cart: JSON.stringify(items) }).then(function(j){
-      orderId = j.orderId;
+      orderId = j.orderId; sandbox = !!j.isSandbox;
       return loadSdk(j.sdkUrl).then(function(){
         return MyPOSEmbedded.createPaymentForm('myPOSEmbeddedCheckout', j.params, {
           isSandbox: j.isSandbox,
@@ -179,8 +184,32 @@ function singlePageLiquid({ shopRow, error }) {
           onError: function(e){ busy = false; btn.disabled = false; showErr((e && (e.message || e.msg)) ? String(e.message || e.msg) : 'The payment was not completed. Please check your card details and try again.'); }
         });
       });
-    }).then(function(p){ payment = p; if (wait) wait.remove(); btn.disabled = false; })
+    }).then(function(p){ payment = p; if (wait) wait.remove(); btn.disabled = false; setupWallet(); })
       .catch(function(e){ if (wait) wait.textContent = ''; showErr((e && e.message) || 'The payment form could not be loaded. Please refresh the page.'); });
+
+    // Google Pay (on-page). The button is covered until the details are complete; details are saved as they are typed.
+    var walletBox = document.getElementById('mpcWallet'), overlay = document.getElementById('mpcWalletOverlay'), saveTimer = null;
+    function formComplete(){ var f = fields(); return ['email','firstName','lastName','address','city','zip'].every(function(k){ return String(f[k]||'').trim(); }) && /.+@.+\\..+/.test(f.email); }
+    function syncOverlay(){ overlay.style.display = formComplete() ? 'none' : 'block'; }
+    form.addEventListener('input', function(){ syncOverlay(); if (!orderId || !formComplete()) return; clearTimeout(saveTimer); saveTimer = setTimeout(function(){ post('/details', Object.assign({ orderId: orderId }, fields())).catch(function(){}); }, 500); });
+    overlay.addEventListener('click', function(){ valid(); });
+    function confirmPaid(tries){
+      return post('/confirm', { orderId: orderId }).then(function(j){
+        if (j.paid) { try{ fetch('/cart/clear.js',{method:'POST'}); }catch(e){} window.location.href = P + '/thanks?order=' + orderId; return; }
+        if (tries > 0) return new Promise(function(r){ setTimeout(r, 1500); }).then(function(){ return confirmPaid(tries - 1); });
+        showErr('We could not confirm the payment yet. If you were charged, you will receive a confirmation email shortly.');
+      });
+    }
+    function setupWallet(){
+      try { if (!window.MyPOSEmbedded || !MyPOSEmbedded.IS_GOOGLE_PAY_AVAILABLE || typeof MyPOSEmbedded.createGooglePayButton !== 'function') return; } catch (e) { return; }
+      post('/wallet-session', { orderId: orderId }).then(function(j){
+        return MyPOSEmbedded.createGooglePayButton('embeddedButtons', j.sessionToken, {
+          isSandbox: sandbox,
+          onSuccess: function(){ post('/details', Object.assign({ orderId: orderId }, fields())).catch(function(){}).then(function(){ confirmPaid(6); }); },
+          onDecline: function(){ showErr('Google Pay payment was declined. Please try another payment method.'); }
+        });
+      }).then(function(){ walletBox.style.display = 'block'; syncOverlay(); }).catch(function(){ /* no wallet button; card form still works */ });
+    }
 
     btn.addEventListener('click', function(){
       if (busy || !payment || !orderId) return;

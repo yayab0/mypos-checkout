@@ -136,7 +136,20 @@ function proxyQuery(params) {
   const emptyStart = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'cart=[]' });
   assert.equal(emptyStart.status, 400);
 
-  // 12. admin auth + page
+  // 12. wallet session + confirm (myPOS calls stubbed): session token returned; confirm marks paid only when myPOS says so
+  mypos.paymentSessionCreate = async () => ({ sessionToken: 'tok123' });
+  const ws = await fetch(`${base}/proxy/wallet-session?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId }).toString() });
+  assert.deepEqual(await ws.json(), { sessionToken: 'tok123' });
+  mypos.paymentStatus = async () => ({ ok: true, paid: false, status: '2', data: {} });
+  let cf = await fetch(`${base}/proxy/confirm?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId }).toString() });
+  assert.equal((await cf.json()).paid, false); assert.equal(orders.get(sj.orderId).status, 'created');
+  mypos.paymentStatus = async () => ({ ok: true, paid: true, status: '1', data: { Amount: '40.95', Currency: 'GBP', IPC_Trnref: '555' } });
+  cf = await fetch(`${base}/proxy/confirm?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId }).toString() });
+  assert.equal((await cf.json()).paid, true);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(orders.get(sj.orderId).status, 'paid'); assert.equal(orders.get(sj.orderId).ipc_trnref, '555'); assert.equal(createdOrders.length, 2);
+
+  // 13. admin auth + page
   assert.equal((await fetch(`${base}/admin`)).status, 401);
   const adm = await fetch(`${base}/admin`, { headers: { authorization: 'Basic ' + Buffer.from('a:b').toString('base64') } });
   assert.equal(adm.status, 200); assert.match(await adm.text(), /#1001/);
