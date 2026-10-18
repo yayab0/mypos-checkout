@@ -1,0 +1,41 @@
+{% comment %}
+  myPOS checkout — send "Buy it now" and "Checkout" buttons to the app-proxy checkout page.
+  Paste this just before </body> in layout/theme.liquid (or render it as a snippet).
+{% endcomment %}
+<script>
+(function () {
+  var PAY_URL = '/apps/pay';
+
+  function go() { window.location.href = PAY_URL; }
+
+  // "Buy it now" (dynamic checkout button): add the product form's variant to the cart, then go to our checkout.
+  function buyNow(btn) {
+    var form = btn.closest('form[action*="/cart/add"]') || document.querySelector('form[action*="/cart/add"]');
+    if (!form) return go();
+    var fd = new FormData(form);
+    var body = new URLSearchParams();
+    fd.forEach(function (v, k) { body.append(k, v); });
+    if (!body.get('quantity')) body.append('quantity', '1');
+    fetch('/cart/add.js', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body.toString() })
+      .then(go, go);
+  }
+
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest(
+      '.shopify-payment-button__button, .shopify-payment-button__more-options, ' +   // Buy it now
+      'button[name="checkout"], input[name="checkout"], a[href="/checkout"], a[href^="/checkout?"], ' + // Checkout
+      '[data-mypos-checkout]'
+    );
+    if (!el) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (el.classList.contains('shopify-payment-button__button') || el.classList.contains('shopify-payment-button__more-options')) buyNow(el);
+    else go();
+  }, true);
+
+  // Cart forms that submit straight to /checkout
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (f && /\/checkout(\?|$)/.test(f.getAttribute('action') || '')) { e.preventDefault(); e.stopImmediatePropagation(); go(); }
+  }, true);
+})();
+</script>
