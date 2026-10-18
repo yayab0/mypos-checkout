@@ -79,6 +79,9 @@ const orders = {
       .run(o.order_id, o.shop, 'created', o.amount, o.currency, JSON.stringify(o.cart), JSON.stringify(o.customer), now(), now());
     return orders.get(o.order_id);
   },
+  setCustomer(id, customer) {
+    db.prepare('UPDATE orders SET customer_json=?, updated_at=? WHERE order_id=?').run(JSON.stringify(customer), now(), id);
+  },
   markPaid(id, { ipc_trnref, card_last4 }) {
     db.prepare(`UPDATE orders SET status='paid', ipc_trnref=?, card_last4=?, paid_at=?, updated_at=? WHERE order_id=?`)
       .run(ipc_trnref || null, card_last4 || null, now(), now(), id);

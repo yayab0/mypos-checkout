@@ -82,22 +82,130 @@ function checkoutLiquid({ shopRow, error }) {
 </div>`;
 }
 
-// Embedded payment page: order summary + myPOS card form (iframe) on the store's own domain.
+// Parameters for the myPOS Embedded SDK for a stored order (no signature needed; the store's approved URL protects it).
+function embeddedParams({ order, shopRow, creds }) {
+  const cart = JSON.parse(order.cart_json || '[]');
+  const ship = Number(shopRow.shipping_amount || 0);
+  const items = cart.map((c) => ({ article: String(c.title).slice(0, 120), quantity: c.quantity, price: Number(Number(c.price).toFixed(2)), currency: order.currency }));
+  if (ship > 0) items.push({ article: shopRow.shipping_label || 'Shipping', quantity: 1, price: Number(ship.toFixed(2)), currency: order.currency });
+  return {
+    isSandbox: !!creds.sandbox,
+    sdkUrl: config.mypos.embeddedSdkUrl,
+    params: {
+      sid: creds.sid, walletNumber: creds.wallet, keyIndex: Number(creds.keyIndex) || 1,
+      ipcLanguage: String(config.mypos.lang || 'en').toLowerCase(),
+      amount: Number(Number(order.amount).toFixed(2)), currency: order.currency, orderID: order.order_id,
+      urlNotify: `${config.appUrl}/mypos/notify`,
+      urlOk: `${config.appUrl}/mypos/ok?order=${order.order_id}`,
+      urlCancel: `${config.appUrl}/mypos/cancel?order=${order.order_id}`,
+      cartItems: items,
+    },
+  };
+}
+
+// Single-page checkout (embedded mode): details + myPOS card form + one Pay button, in the theme.
+function singlePageLiquid({ shopRow, error }) {
+  const ship = Number(shopRow.shipping_amount || 0);
+  const P = config.proxyPath;
+  return `${CSS}
+<style>#myPOSEmbeddedCheckout{min-height:360px}.mpc .sect{font-weight:600;margin:22px 0 6px}.mpc .alt{display:block;text-align:center;margin-top:12px;font-size:.9em}
+.mpc .wait{opacity:.6;font-size:.9em;padding:12px 0}</style>
+<div class="mpc" id="mpc">
+{% if cart.item_count == 0 %}
+  <div class="card empty" style="grid-column:1/-1"><h2>Your cart is empty</h2><p><a href="/collections/all">Continue shopping</a></p></div>
+{% else %}
+  <div>
+    <h2>Checkout</h2>
+    <div class="card">
+      <div id="mpcErr" class="err" style="display:${error ? 'block' : 'none'}">${esc(error || '')}</div>
+      <form id="mpcForm" onsubmit="return false">
+        <div class="sect">Contact</div>
+        <label>Email</label><input type="email" name="email" required autocomplete="email" value="{{ customer.email | escape }}">
+        <div class="sect">Delivery address</div>
+        <div class="row">
+          <div><label>First name</label><input name="firstName" required autocomplete="given-name" value="{{ customer.first_name | escape }}"></div>
+          <div><label>Last name</label><input name="lastName" required autocomplete="family-name" value="{{ customer.last_name | escape }}"></div>
+        </div>
+        <label>Address</label><input name="address" required autocomplete="address-line1">
+        <div class="row">
+          <div><label>City</label><input name="city" required autocomplete="address-level2"></div>
+          <div><label>Postcode</label><input name="zip" required autocomplete="postal-code"></div>
+        </div>
+        <label>Country</label><select name="country" autocomplete="country">${countries.options('GB')}</select>
+        <label>Phone (optional)</label><input name="phone" type="tel" autocomplete="tel">
+        <div class="sect">Payment</div>
+        <div id="myPOSEmbeddedCheckout"><div class="wait" id="mpcWait">Loading secure card form…</div></div>
+        <button class="btn" type="button" id="btn-pay" disabled>Pay {{ cart.total_price | plus: ${Math.round(ship * 100)} | money }}</button>
+        <a class="alt" href="#" id="mpcHosted">Apple Pay / Google Pay →</a>
+        <div class="secure">🔒 Card details go directly to myPOS and never touch this store.</div>
+      </form>
+    </div>
+  </div>
+  <div>
+    <h2>Your order</h2>
+    <div class="card">
+      {% for item in cart.items %}
+      <div class="item">
+        {% if item.image %}<img src="{{ item.image | image_url: width: 112 }}" alt="">{% endif %}
+        <div class="t">{{ item.product.title | escape }}{% unless item.variant.title == 'Default Title' %}<small>{{ item.variant.title | escape }}</small>{% endunless %}<small>Qty {{ item.quantity }}</small></div>
+        <div>{{ item.final_line_price | money }}</div>
+      </div>
+      {% endfor %}
+      <div class="tot" style="margin-top:12px"><span>Subtotal</span><span>{{ cart.total_price | money }}</span></div>
+      <div class="tot"><span>${esc(shopRow.shipping_label || 'Shipping')}</span><span>${ship > 0 ? `{{ ${Math.round(ship * 100)} | money }}` : 'Free'}</span></div>
+      <div class="tot g"><span>Total</span><span>{{ cart.total_price | plus: ${Math.round(ship * 100)} | money }}</span></div>
+    </div>
+  </div>
+  <script>
+  (function(){
+    var P = ${JSON.stringify(P)};
+    var items = [{% for item in cart.items %}{"variantId":{{ item.variant_id }},"quantity":{{ item.quantity }}}{% unless forloop.last %},{% endunless %}{% endfor %}];
+    var form = document.getElementById('mpcForm'), btn = document.getElementById('btn-pay'), err = document.getElementById('mpcErr'), wait = document.getElementById('mpcWait');
+    var orderId = null, payment = null, busy = false;
+    function showErr(m){ err.textContent = m; err.style.display = 'block'; window.scrollTo({top: err.getBoundingClientRect().top + window.scrollY - 80, behavior: 'smooth'}); }
+    function hideErr(){ err.style.display = 'none'; }
+    function fields(){ var o = {}; new FormData(form).forEach(function(v,k){ o[k] = v; }); return o; }
+    function post(path, data){ var b = new URLSearchParams(data); return fetch(P + path, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: b.toString(), credentials:'same-origin' }).then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error || 'Request failed'); return j; }); }); }
+    function loadSdk(url){ return new Promise(function(res, rej){ if (window.MyPOSEmbedded) return res(); var s = document.createElement('script'); s.src = url; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+    function valid(){ var f = fields(); var missing = ['email','firstName','lastName','address','city','zip'].filter(function(k){ return !String(f[k]||'').trim(); }); if (missing.length || !/.+@.+\\..+/.test(f.email)) { showErr('Please fill in your email and delivery address.'); form.querySelector('[name="'+(missing[0]||'email')+'"]').focus(); return null; } return f; }
+
+    post('/start', { cart: JSON.stringify(items) }).then(function(j){
+      orderId = j.orderId;
+      return loadSdk(j.sdkUrl).then(function(){
+        return MyPOSEmbedded.createPaymentForm('myPOSEmbeddedCheckout', j.params, {
+          isSandbox: j.isSandbox,
+          onMessageReceived: function(msgs){ try { var arr = Array.isArray(msgs) ? msgs : [msgs]; var e = arr.map(function(m){ return (m && (m.message || m.msg || m.text)) || ''; }).filter(Boolean).join(' '); if (e) showErr(e); } catch(x){} busy = false; btn.disabled = false; },
+          onSuccess: function(){ try{ fetch('/cart/clear.js',{method:'POST'}); }catch(e){} window.location.href = P + '/thanks?order=' + orderId; },
+          onError: function(e){ busy = false; btn.disabled = false; showErr((e && (e.message || e.msg)) ? String(e.message || e.msg) : 'The payment was not completed. Please check your card details and try again.'); }
+        });
+      });
+    }).then(function(p){ payment = p; if (wait) wait.remove(); btn.disabled = false; })
+      .catch(function(e){ if (wait) wait.textContent = ''; showErr((e && e.message) || 'The payment form could not be loaded. Please refresh the page.'); });
+
+    btn.addEventListener('click', function(){
+      if (busy || !payment || !orderId) return;
+      hideErr(); var f = valid(); if (!f) return;
+      busy = true; btn.disabled = true; var label = btn.textContent; btn.textContent = 'Processing…';
+      post('/details', Object.assign({ orderId: orderId }, f)).then(function(){ payment.processPayment(); })
+        .catch(function(e){ busy = false; btn.disabled = false; btn.textContent = label; showErr(e.message); });
+    });
+
+    document.getElementById('mpcHosted').addEventListener('click', function(ev){
+      ev.preventDefault(); if (!orderId) return; hideErr(); var f = valid(); if (!f) return;
+      post('/details', Object.assign({ orderId: orderId }, f)).then(function(){ window.location.href = P + '/hosted?order=' + orderId; }).catch(function(e){ showErr(e.message); });
+    });
+  })();
+  </script>
+{% endif %}
+</div>`;
+}
+
+// Embedded payment page (step 2 of the classic flow): order summary + myPOS card form (iframe).
 function embeddedPayLiquid({ order, shopRow, creds }) {
   const cart = JSON.parse(order.cart_json || '[]');
   const customer = JSON.parse(order.customer_json || '{}');
   const ship = Number(shopRow.shipping_amount || 0);
-  const items = cart.map((c) => ({ article: String(c.title).slice(0, 120), quantity: c.quantity, price: Number(Number(c.price).toFixed(2)), currency: order.currency }));
-  if (ship > 0) items.push({ article: shopRow.shipping_label || 'Shipping', quantity: 1, price: Number(ship.toFixed(2)), currency: order.currency });
-  const params = {
-    sid: creds.sid, walletNumber: creds.wallet, keyIndex: Number(creds.keyIndex) || 1,
-    ipcLanguage: String(config.mypos.lang || 'en').toLowerCase(),
-    amount: Number(Number(order.amount).toFixed(2)), currency: order.currency, orderID: order.order_id,
-    urlNotify: `${config.appUrl}/mypos/notify`,
-    urlOk: `${config.appUrl}/mypos/ok?order=${order.order_id}`,
-    urlCancel: `${config.appUrl}/mypos/cancel?order=${order.order_id}`,
-    cartItems: items,
-  };
+  const params = embeddedParams({ order, shopRow, creds }).params;
   const thanksUrl = `${config.proxyPath}/thanks?order=${order.order_id}`;
   const hostedUrl = `${config.proxyPath}/hosted?order=${order.order_id}`;
   const fmt = (n) => `{{ ${Math.round(Number(n) * 100)} | money }}`;
@@ -227,4 +335,4 @@ function adminHtml({ shops, orders, myposStatus, flash }) {
     <table><tr><th>Ref</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Shopify</th><th>Refund</th></tr>${orderRows || '<tr><td colspan="8" class="muted">No orders yet.</td></tr>'}</table>`);
 }
 
-module.exports = { checkoutLiquid, embeddedPayLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };
+module.exports = { checkoutLiquid, singlePageLiquid, embeddedParams, embeddedPayLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };

@@ -56,18 +56,12 @@ function basicAuthOk(req) {
 
 // GET /proxy  (store.com/apps/pay)
 function handleCheckoutPage(res, shopRow, error) {
+  if (config.mypos.mode === 'embedded') return sendLiquid(res, views.singlePageLiquid({ shopRow, error }));
   sendLiquid(res, views.checkoutLiquid({ shopRow, error }));
 }
 
-// POST /proxy/create  (store.com/apps/pay/create)
-async function handleCreate(req, res, shopRow) {
-  const { fields } = await parseForm(req);
-  let items;
-  try { items = JSON.parse(fields.cart || '[]'); } catch { items = []; }
-  if (!Array.isArray(items) || !items.length) return handleCheckoutPage(res, shopRow, 'Your cart looks empty. Please add a product and try again.');
-  if (!mypos.isConfigured()) return handleCheckoutPage(res, shopRow, 'Payments are not configured yet. Please try again later.');
-
-  const customer = {
+function customerFromFields(fields) {
+  return {
     email: String(fields.email || '').trim().slice(0, 120),
     phone: String(fields.phone || '').trim().slice(0, 40),
     firstName: String(fields.firstName || '').trim().slice(0, 60),
@@ -77,23 +71,62 @@ async function handleCreate(req, res, shopRow) {
     zip: String(fields.zip || '').trim().slice(0, 20),
     countryCode: countries.isKnown(fields.country) ? String(fields.country).toUpperCase() : 'GB',
   };
-  if (!customer.email || !customer.firstName || !customer.lastName || !customer.address || !customer.city || !customer.zip) {
-    return handleCheckoutPage(res, shopRow, 'Please fill in all required fields.');
-  }
+}
+const customerComplete = (c) => !!(c.email && /.+@.+\..+/.test(c.email) && c.firstName && c.lastName && c.address && c.city && c.zip);
 
-  let cart;
-  try { cart = await shopify.priceCart(shopRow, items); }
-  catch (e) { log('priceCart failed', shopRow.shop, e.message); return handleCheckoutPage(res, shopRow, 'We could not verify your cart. Please try again.'); }
-
+// Re-price the cart from Shopify and create the order record. Returns the order row or throws.
+async function createOrderFromCart(shopRow, items, customer) {
+  const cart = await shopify.priceCart(shopRow, items);
   const currency = shopRow.currency || 'GBP';
   const lines = cart.map((c) => ({ title: c.title, quantity: c.quantity, price: c.price }));
   const shipAmount = Number(shopRow.shipping_amount || 0);
   if (shipAmount > 0) lines.push({ title: shopRow.shipping_label || 'Shipping', quantity: 1, price: shipAmount });
-
   const orderId = newOrderId();
   const total = mypos.money(lines.reduce((s, l) => s + Number(l.price) * Number(l.quantity), 0));
-  orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(total), currency, cart, customer });
+  const row = orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(total), currency, cart, customer });
   log('order created', orderId, shopRow.shop, total, currency, config.mypos.mode);
+  return row;
+}
+
+// POST /proxy/start  — single-page checkout: called by the page on load with the cart; returns the
+// embedded-payment params so the card form can render while the customer fills in their details.
+async function handleStart(req, res, shopRow) {
+  const { fields } = await parseForm(req);
+  let items;
+  try { items = JSON.parse(fields.cart || '[]'); } catch { items = []; }
+  if (!Array.isArray(items) || !items.length) return sendJson(res, 400, { error: 'Your cart is empty.' });
+  if (!mypos.isConfigured()) return sendJson(res, 503, { error: 'Payments are not configured yet.' });
+  let order;
+  try { order = await createOrderFromCart(shopRow, items, customerFromFields(fields)); }
+  catch (e) { log('start failed', shopRow.shop, e.message); return sendJson(res, 400, { error: 'We could not verify your cart. Please refresh and try again.' }); }
+  sendJson(res, 200, { orderId: order.order_id, amount: order.amount, currency: order.currency, ...views.embeddedParams({ order, shopRow, creds: mypos.credentials() }) });
+}
+
+// POST /proxy/details — save the customer's details on the order right before the payment is processed.
+async function handleDetails(req, res, shopRow) {
+  const { fields } = await parseForm(req);
+  const order = orders.get(String(fields.orderId || ''));
+  if (!order || order.shop !== shopRow.shop || order.status !== 'created') return sendJson(res, 404, { error: 'Order not found.' });
+  const customer = customerFromFields(fields);
+  if (!customerComplete(customer)) return sendJson(res, 400, { error: 'Please fill in all required fields.' });
+  orders.setCustomer(order.order_id, customer);
+  sendJson(res, 200, { ok: true });
+}
+
+// POST /proxy/create  (store.com/apps/pay/create) — classic form submit (no-JS fallback / redirect mode)
+async function handleCreate(req, res, shopRow) {
+  const { fields } = await parseForm(req);
+  let items;
+  try { items = JSON.parse(fields.cart || '[]'); } catch { items = []; }
+  if (!Array.isArray(items) || !items.length) return handleCheckoutPage(res, shopRow, 'Your cart looks empty. Please add a product and try again.');
+  if (!mypos.isConfigured()) return handleCheckoutPage(res, shopRow, 'Payments are not configured yet. Please try again later.');
+  const customer = customerFromFields(fields);
+  if (!customerComplete(customer)) return handleCheckoutPage(res, shopRow, 'Please fill in all required fields.');
+
+  let order;
+  try { order = await createOrderFromCart(shopRow, items, customer); }
+  catch (e) { log('priceCart failed', shopRow.shop, e.message); return handleCheckoutPage(res, shopRow, 'We could not verify your cart. Please try again.'); }
+  const orderId = order.order_id;
 
   if (config.mypos.mode === 'embedded') {
     // Hand the browser to the on-site payment page (GET through the proxy so Shopify renders it in the theme).
@@ -290,6 +323,8 @@ async function route(req, res) {
     const sub = p.slice('/proxy'.length) || '/';
     if (sub === '/' && req.method === 'GET') return handleCheckoutPage(res, shopRow);
     if (sub === '/create' && req.method === 'POST') return handleCreate(req, res, shopRow);
+    if (sub === '/start' && req.method === 'POST') return handleStart(req, res, shopRow);
+    if (sub === '/details' && req.method === 'POST') return handleDetails(req, res, shopRow);
     if (sub === '/pay') return handleEmbeddedPay(res, shopRow, url.searchParams.get('order') || '');
     if (sub === '/hosted') return handleHosted(res, shopRow, url.searchParams.get('order') || '');
     if (sub === '/thanks') return sendLiquid(res, views.thanksLiquid({ order: orders.get(url.searchParams.get('order') || '') }));

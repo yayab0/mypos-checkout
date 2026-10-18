@@ -123,7 +123,20 @@ function proxyQuery(params) {
   const hosted = await fetch(`${base}/proxy/hosted?${q3}`);
   assert.match(await hosted.text(), /name="IPCmethod" value="IPCPurchase"/);
 
-  // 11. admin auth + page
+  // 11. single-page checkout: page has the form + pay button; /start creates the order and returns SDK params; /details saves the address
+  const sp = await fetch(`${base}/proxy?${q}`); const spHtml = await sp.text();
+  assert.match(spHtml, /MyPOSEmbedded\.createPaymentForm/); assert.match(spHtml, /id="btn-pay"/); assert.match(spHtml, /\/start/);
+  const st = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ cart: JSON.stringify([{ variantId: 111, quantity: 2 }, { variantId: 222, quantity: 1 }]) }).toString() });
+  assert.equal(st.status, 200); const sj = await st.json();
+  assert.ok(sj.orderId.startsWith('MP')); assert.equal(sj.params.amount, 40.95); assert.equal(sj.params.orderID, sj.orderId); assert.equal(sj.params.cartItems.length, 3); assert.equal(sj.isSandbox, true);
+  const d1 = await fetch(`${base}/proxy/details?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId, email: 'x' }).toString() });
+  assert.equal(d1.status, 400);
+  const d2 = await fetch(`${base}/proxy/details?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId, email: 'jane@example.com', firstName: 'Jane', lastName: 'Doe', address: '1 High St', city: 'London', zip: 'E1', country: 'GB' }).toString() });
+  assert.equal(d2.status, 200); assert.equal(JSON.parse(orders.get(sj.orderId).customer_json).city, 'London');
+  const emptyStart = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'cart=[]' });
+  assert.equal(emptyStart.status, 400);
+
+  // 12. admin auth + page
   assert.equal((await fetch(`${base}/admin`)).status, 401);
   const adm = await fetch(`${base}/admin`, { headers: { authorization: 'Basic ' + Buffer.from('a:b').toString('base64') } });
   assert.equal(adm.status, 200); assert.match(await adm.text(), /#1001/);
