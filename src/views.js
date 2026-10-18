@@ -170,6 +170,8 @@ function singlePageLiquid({ shopRow, error, attrs = {} }) {
     function showErr(m){ err.textContent = m; err.style.display = 'block'; window.scrollTo({top: err.getBoundingClientRect().top + window.scrollY - 80, behavior: 'smooth'}); }
     function hideErr(){ err.style.display = 'none'; }
     function fields(){ var o = {}; new FormData(form).forEach(function(v,k){ o[k] = v; }); return o; }
+    function report(method, reason){ if (!orderId) return; try { post('/event', { orderId: orderId, method: method, reason: String(reason || '').slice(0, 300) }).catch(function(){}); } catch (e) {} }
+    function msgText(m){ if (!m) return ''; if (typeof m === 'string') return m; try { return m.message || m.msg || m.text || m.description || m.error || JSON.stringify(m); } catch (e) { return ''; } }
     function post(path, data){ var b = new URLSearchParams(data); return fetch(P + path, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: b.toString(), credentials:'same-origin' }).then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error || 'Request failed'); return j; }); }); }
     function loadSdk(url){ return new Promise(function(res, rej){ if (window.MyPOSEmbedded) return res(); var s = document.createElement('script'); s.src = url; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
     function valid(){ var f = fields(); var missing = ['email','firstName','lastName','address','city','zip'].filter(function(k){ return !String(f[k]||'').trim(); }); if (missing.length || !/.+@.+\\..+/.test(f.email)) { showErr('Please fill in your email and delivery address.'); form.querySelector('[name="'+(missing[0]||'email')+'"]').focus(); return null; } return f; }
@@ -179,9 +181,9 @@ function singlePageLiquid({ shopRow, error, attrs = {} }) {
       return loadSdk(j.sdkUrl).then(function(){
         return MyPOSEmbedded.createPaymentForm('myPOSEmbeddedCheckout', j.params, {
           isSandbox: j.isSandbox,
-          onMessageReceived: function(msgs){ try { var arr = Array.isArray(msgs) ? msgs : [msgs]; var e = arr.map(function(m){ return (m && (m.message || m.msg || m.text)) || ''; }).filter(Boolean).join(' '); if (e) showErr(e); } catch(x){} busy = false; btn.disabled = false; },
+          onMessageReceived: function(msgs){ try { var arr = Array.isArray(msgs) ? msgs : [msgs]; var e = arr.map(msgText).filter(Boolean).join(' '); if (e) { showErr(e); report('card', e); } } catch(x){} busy = false; btn.disabled = false; },
           onSuccess: function(){ try{ fetch('/cart/clear.js',{method:'POST'}); }catch(e){} window.location.href = P + '/thanks?order=' + orderId; },
-          onError: function(e){ busy = false; btn.disabled = false; showErr((e && (e.message || e.msg)) ? String(e.message || e.msg) : 'The payment was not completed. Please check your card details and try again.'); }
+          onError: function(e){ busy = false; btn.disabled = false; var t = msgText(e); report('card', t || 'declined / not completed'); showErr(t || 'The payment was not completed. Please check your card details and try again.'); }
         });
       });
     }).then(function(p){ payment = p; if (wait) wait.remove(); btn.disabled = false; setupWallet(); })
@@ -206,7 +208,7 @@ function singlePageLiquid({ shopRow, error, attrs = {} }) {
         return MyPOSEmbedded.createGooglePayButton('embeddedButtons', j.sessionToken, {
           isSandbox: sandbox,
           onSuccess: function(){ post('/details', Object.assign({ orderId: orderId }, fields())).catch(function(){}).then(function(){ confirmPaid(6); }); },
-          onDecline: function(){ showErr('Google Pay payment was declined. Please try another payment method.'); }
+          onDecline: function(e){ report('googlepay', msgText(e) || 'declined'); showErr('Google Pay payment was declined. Please try another payment method.'); }
         });
       }).then(function(){ walletBox.style.display = 'block'; syncOverlay(); }).catch(function(){ /* no wallet button; card form still works */ });
     }
@@ -390,10 +392,12 @@ function adminHtml({ shops, orders, abandoned = [], myposStatus, flash }) {
     <h2>Stores (${shops.length})</h2>
     <table><tr><th>Store</th><th>Checkout URL</th><th>Currency</th><th>Flat shipping</th><th>Installed</th></tr>${shopRows || '<tr><td colspan="5" class="muted">No stores installed yet.</td></tr>'}</table>
     <h2>Abandoned checkouts (${abandoned.length}) <span class="muted" style="font-weight:400;font-size:.8em">— started, email entered, not paid after 30 min</span></h2>
-    <table><tr><th>When</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>From</th></tr>${abandoned.map((o) => { const c = JSON.parse(o.customer_json || '{}'); const a = JSON.parse(o.attrs_json || '{}'); const cart = JSON.parse(o.cart_json || '[]'); return `
+    <table><tr><th>When</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>From</th><th>Why it failed</th></tr>${abandoned.map((o) => { const c = JSON.parse(o.customer_json || '{}'); const a = JSON.parse(o.attrs_json || '{}'); const cart = JSON.parse(o.cart_json || '[]'); return `
       <tr><td class="muted">${esc(o.created_at.replace('T', ' ').slice(0, 16))}</td><td>${esc(o.shop.replace('.myshopify.com', ''))}</td>
       <td>${esc(c.firstName || '')} ${esc(c.lastName || '')}<br><a href="mailto:${esc(c.email || '')}">${esc(c.email || '')}</a>${c.phone ? `<br><span class="muted">${esc(c.phone)}</span>` : ''}</td>
-      <td>${cart.map((i) => `${esc(i.title)} ×${i.quantity}`).join('<br>')}</td><td>${fmt(o.amount, o.currency)}</td><td class="muted">${esc(a.source || a.ref || '')}</td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">None.</td></tr>'}</table>
+      <td>${cart.map((i) => `${esc(i.title)} ×${i.quantity}`).join('<br>')}</td><td>${fmt(o.amount, o.currency)}</td><td class="muted">${esc(a.source || a.ref || '')}</td>
+      <td>${o.fail_reason ? `<span class="bad">${esc(o.fail_reason)}</span>${Number(o.fail_count) > 1 ? ` <span class="muted">(×${o.fail_count})</span>` : ''}` : '<span class="muted">No payment attempt — left before paying</span>'}
+        <form method="post" action="/admin/check-decline" style="margin-top:6px"><input type="hidden" name="order_id" value="${esc(o.order_id)}"><button style="padding:4px 8px;font-size:.8em">Check with myPOS</button></form></td></tr>`; }).join('') || '<tr><td colspan="7" class="muted">None.</td></tr>'}</table>
     <h2>Orders (latest ${orders.length})</h2>
     <table><tr><th>Ref</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Shopify</th><th>Refund</th></tr>${orderRows || '<tr><td colspan="8" class="muted">No orders yet.</td></tr>'}</table>`);
 }

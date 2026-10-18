@@ -150,6 +150,17 @@ function proxyQuery(params) {
   assert.equal(orders.get(sj.orderId).status, 'paid'); assert.equal(orders.get(sj.orderId).ipc_trnref, '555'); assert.equal(createdOrders.length, 2);
   assert.deepEqual(createdOrders[1].attrs, { ref: 'ABC123', gclid: 'Cj0KCQ', source: 'Game Exchange' });
 
+  // 12b. failure reasons: page report stored; myPOS declined attempts stored on confirm
+  const ev = await fetch(`${base}/proxy/event?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: sj.orderId, method: 'card', reason: 'Card declined by issuer' }).toString() });
+  assert.equal(ev.status, 200); // order already paid -> not recorded as failure
+  const st2 = await fetch(`${base}/proxy/start?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ cart: JSON.stringify([{ variantId: 111, quantity: 1 }]) }).toString() });
+  const o2 = (await st2.json()).orderId;
+  await fetch(`${base}/proxy/event?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: o2, method: 'card', reason: 'Insufficient funds' }).toString() });
+  assert.equal(orders.get(o2).fail_reason, 'card: Insufficient funds'); assert.equal(orders.get(o2).fail_count, 1);
+  mypos.paymentStatus = async () => ({ ok: true, paid: false, status: '3', declined: ['Do not honour (05)'], data: {} });
+  await fetch(`${base}/proxy/confirm?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ orderId: o2 }).toString() });
+  assert.equal(orders.get(o2).fail_reason, 'myPOS: Do not honour (05)');
+
   // 13. cross-store cart: landing page with items param, and /resolve mapping SKU/handle -> this store's variants
   shopify.resolveItems = async (_shop, specs) => specs.map((s) => (s.sku === 'GEN-10KW' ? { id: 777, quantity: Number(s.q) } : s.handle === 'shed' ? { id: 888, quantity: Number(s.q) } : { unresolved: s, quantity: Number(s.q) }));
   const specs = encodeURIComponent(JSON.stringify([{ sku: 'GEN-10KW', q: 1 }, { handle: 'shed', variant: 'Grey', q: 2 }, { sku: 'NOPE', q: 1 }]));

@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS orders (
   shopify_error     TEXT,
   refunded_amount   REAL DEFAULT 0,
   attrs_json        TEXT DEFAULT '{}',          -- {ref, gclid, source} from the referring store
+  fail_reason       TEXT,                       -- last payment failure reason (page report or myPOS decline)
+  fail_count        INTEGER DEFAULT 0,
+  last_fail_at      TEXT,
   created_at        TEXT NOT NULL,
   paid_at           TEXT,
   updated_at        TEXT NOT NULL
@@ -49,7 +52,9 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 );
 `);
 
-try { db.exec("ALTER TABLE orders ADD COLUMN attrs_json TEXT DEFAULT '{}'"); } catch { /* already there */ }
+for (const col of ["attrs_json TEXT DEFAULT '{}'", "fail_reason TEXT", "fail_count INTEGER DEFAULT 0", "last_fail_at TEXT"]) {
+  try { db.exec(`ALTER TABLE orders ADD COLUMN ${col}`); } catch { /* already there */ }
+}
 
 const now = () => new Date().toISOString();
 
@@ -84,6 +89,13 @@ const orders = {
                 VALUES (?,?,?,?,?,?,?,?,?,?)`)
       .run(o.order_id, o.shop, 'created', o.amount, o.currency, JSON.stringify(o.cart), JSON.stringify(o.customer), JSON.stringify(o.attrs || {}), now(), now());
     return orders.get(o.order_id);
+  },
+  addFailure(id, reason) {
+    db.prepare('UPDATE orders SET fail_reason=?, fail_count=fail_count+1, last_fail_at=?, updated_at=? WHERE order_id=?')
+      .run(String(reason || 'Payment failed').slice(0, 500), now(), now(), id);
+  },
+  setFailReason(id, reason) {
+    db.prepare('UPDATE orders SET fail_reason=?, updated_at=? WHERE order_id=?').run(String(reason || '').slice(0, 500), now(), id);
   },
   setCustomer(id, customer) {
     db.prepare('UPDATE orders SET customer_json=?, updated_at=? WHERE order_id=?').run(JSON.stringify(customer), now(), id);

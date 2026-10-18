@@ -236,16 +236,18 @@ async function refund({ orderId, ipcTrnref, amount, currency }) {
 }
 
 // Returns { ok, paid, status, data } — paid is true only when myPOS says PaymentStatus 1 (successful).
-async function paymentStatus({ orderId }) {
+async function paymentStatus({ orderId, includeDeclined = false }) {
   const c = credentials();
   const p = baseServerParams('IPCGetPaymentStatus');
   p.push(['OrderID', orderId]);
   p.push(['OutputFormat', 'json']);
+  if (includeDeclined) p.push(['get_declined_payments', '1']);
   p.push(['Signature', sign(p, c.privateKey)]);
   const r = await ipcPost(p);
   const d = r.json || {};
   const ok = String(d.Status) === '0';
-  return { ok, paid: ok && String(d.PaymentStatus) === '1', status: d.PaymentStatus, data: r.json || r.text };
+  const declined = Array.isArray(d.DeclinedPayments) ? d.DeclinedPayments.map((x) => `${x.responseCodeDescription || x.responseCode || 'declined'}${x.responseCode ? ` (${x.responseCode})` : ''}`) : [];
+  return { ok, paid: ok && String(d.PaymentStatus) === '1', status: d.PaymentStatus, declined, statusMsg: d.StatusMsg, data: r.json || r.text };
 }
 
 // Payment session for the embedded Apple Pay / Google Pay buttons (IPCPaymentSessionCreate). Returns the SessionToken.

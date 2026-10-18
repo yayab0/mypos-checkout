@@ -145,6 +145,25 @@ async function handleResolve(req, res, shopRow) {
   } catch (e) { log('resolve failed', shopRow.shop, e.message); sendJson(res, 500, { error: 'Could not prepare your cart.' }); }
 }
 
+// POST /proxy/event — the page reports a payment failure reason (declined, 3DS failed, invalid card...).
+async function handleEvent(req, res, shopRow) {
+  const { fields } = await parseForm(req);
+  const order = orders.get(String(fields.orderId || ''));
+  if (!order || order.shop !== shopRow.shop) return sendJson(res, 404, { error: 'Order not found.' });
+  const reason = String(fields.reason || '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'Payment failed (no details given)';
+  if (order.status === 'created') orders.addFailure(order.order_id, `${String(fields.method || 'card').slice(0, 20)}: ${reason}`);
+  log('payment failed', order.order_id, reason);
+  sendJson(res, 200, { ok: true });
+}
+
+// Ask myPOS for the declined attempts on an order and store the reason.
+async function refreshDeclineReason(orderId) {
+  const st = await mypos.paymentStatus({ orderId, includeDeclined: true });
+  if (st.declined.length) { orders.setFailReason(orderId, `myPOS: ${st.declined.slice(-3).join(' | ')}`); return st.declined.join(' | '); }
+  if (!st.ok) return `myPOS: ${st.statusMsg || 'no record'}`;
+  return st.paid ? 'paid' : `no declined attempts recorded (status ${st.status || 'none'})`;
+}
+
 // POST /proxy/wallet-session — payment session token for the embedded Google Pay / Apple Pay buttons.
 async function handleWalletSession(req, res, shopRow) {
   const { fields } = await parseForm(req);
@@ -166,8 +185,11 @@ async function handleConfirm(req, res, shopRow) {
   if (!order || order.shop !== shopRow.shop) return sendJson(res, 404, { error: 'Order not found.' });
   if (order.status === 'paid') return sendJson(res, 200, { paid: true });
   try {
-    const st = await mypos.paymentStatus({ orderId: order.order_id });
-    if (!st.paid) return sendJson(res, 200, { paid: false, status: st.status });
+    const st = await mypos.paymentStatus({ orderId: order.order_id, includeDeclined: true });
+    if (!st.paid) {
+      if (st.declined.length) orders.setFailReason(order.order_id, `myPOS: ${st.declined.slice(-3).join(' | ')}`);
+      return sendJson(res, 200, { paid: false, status: st.status });
+    }
     const d = st.data || {};
     if (Math.abs(Number(d.Amount) - Number(order.amount)) > 0.005) { log('confirm: AMOUNT MISMATCH', order.order_id, d.Amount, order.amount); return sendJson(res, 200, { paid: false }); }
     orders.markPaid(order.order_id, { ipc_trnref: d.IPC_Trnref, card_last4: null });
@@ -291,7 +313,7 @@ async function handleReturn(req, res, kind) {
   const order = orders.get(url.searchParams.get('order') || '');
   if (!order) return send(res, 404, views.page('Not found', '<h1>Order not found</h1>'));
   const shopRow = shops.get(order.shop);
-  if (kind === 'cancel' && order.status === 'created') orders.setStatus(order.order_id, 'cancelled');
+  if (kind === 'cancel' && order.status === 'created') { orders.setStatus(order.order_id, 'cancelled'); orders.addFailure(order.order_id, 'myPOS page: customer cancelled or payment not completed'); }
   if (!shopRow) return send(res, 200, views.page('Thank you', kind === 'ok' ? '<h1>Thank you — payment received</h1>' : '<h1>Payment cancelled</h1>'));
   redirect(res, storeUrl(shopRow, kind === 'ok' ? `/thanks?order=${order.order_id}` : `/cancel?order=${order.order_id}`));
 }
@@ -350,6 +372,9 @@ async function handleAdmin(req, res, url) {
       } else if (url.pathname === '/admin/retry') {
         await createShopifyOrder(fields.order_id);
         flash = { ok: true, msg: `Shopify order created for ${fields.order_id}` };
+      } else if (url.pathname === '/admin/check-decline') {
+        const r = await refreshDeclineReason(String(fields.order_id || ''));
+        flash = { ok: true, msg: `myPOS says for ${fields.order_id}: ${r}` };
       } else if (url.pathname === '/admin/refund') {
         const o = orders.get(fields.order_id);
         const amount = Number(fields.amount);
@@ -401,6 +426,7 @@ async function route(req, res) {
     if (sub === '/details' && req.method === 'POST') return handleDetails(req, res, shopRow);
     if (sub === '/wallet-session' && req.method === 'POST') return handleWalletSession(req, res, shopRow);
     if (sub === '/confirm' && req.method === 'POST') return handleConfirm(req, res, shopRow);
+    if (sub === '/event' && req.method === 'POST') return handleEvent(req, res, shopRow);
     if (sub === '/pay') return handleEmbeddedPay(res, shopRow, url.searchParams.get('order') || '');
     if (sub === '/hosted') return handleHosted(res, shopRow, url.searchParams.get('order') || '');
     if (sub === '/thanks') return sendLiquid(res, views.thanksLiquid({ order: orders.get(url.searchParams.get('order') || '') }));
