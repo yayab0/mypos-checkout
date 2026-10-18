@@ -60,8 +60,9 @@ function proxyQuery(params) {
   const html = await page.text();
   assert.match(html, /cart\.items/); assert.match(html, /Delivery/);
 
-  // 4. create purchase -> auto-submit form to myPOS sandbox with correct totals + valid signature
+  // 4. create purchase -> auto-submit form to myPOS sandbox with correct totals + valid signature (redirect mode)
   const form = new URLSearchParams({ cart: JSON.stringify([{ variantId: 111, quantity: 2 }, { variantId: 222, quantity: 1 }]), email: 'jane@example.com', firstName: 'Jane', lastName: 'Doe', address: '1 High St', city: 'London', zip: 'E1 6AN', country: 'GB', phone: '' });
+  config.mypos.mode = 'redirect';
   const create = await fetch(`${base}/proxy/create?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form.toString() });
   assert.equal(create.status, 200);
   const chtml = await create.text();
@@ -107,7 +108,22 @@ function proxyQuery(params) {
   const thanks = await fetch(`${base}/proxy/thanks?${q2}`);
   assert.match(await thanks.text(), /payment received/);
 
-  // 10. admin auth + page
+  // 10. embedded mode: create -> bounce to /pay -> themed page with the myPOS SDK call, correct amount, no signature needed
+  config.mypos.mode = 'embedded';
+  const c2 = await fetch(`${base}/proxy/create?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form.toString() });
+  const c2html = await c2.text();
+  const m = c2html.match(/\/apps\/pay\/pay\?order=([A-Z0-9]+)/); assert.ok(m, 'create must bounce to the embedded pay page');
+  const q3 = proxyQuery({ shop: 'test-store.myshopify.com', path_prefix: '/apps/pay', timestamp: String(Math.floor(Date.now() / 1000)), order: m[1] });
+  const payPage = await fetch(`${base}/proxy/pay?${q3}`);
+  assert.match(payPage.headers.get('content-type'), /application\/liquid/);
+  const payHtml = await payPage.text();
+  assert.match(payHtml, /MyPOSEmbedded\.createPayment\('myPOSEmbeddedCheckout'/);
+  assert.match(payHtml, /"amount":40\.95/); assert.match(payHtml, /"sid":"000000000000010"/); assert.match(payHtml, /"isSandbox"|isSandbox: true/);
+  assert.match(payHtml, /"cartItems":\[.*"article":"Delivery","quantity":1,"price":3\.45/);
+  const hosted = await fetch(`${base}/proxy/hosted?${q3}`);
+  assert.match(await hosted.text(), /name="IPCmethod" value="IPCPurchase"/);
+
+  // 11. admin auth + page
   assert.equal((await fetch(`${base}/admin`)).status, 401);
   const adm = await fetch(`${base}/admin`, { headers: { authorization: 'Basic ' + Buffer.from('a:b').toString('base64') } });
   assert.equal(adm.status, 200); assert.match(await adm.text(), /#1001/);

@@ -91,8 +91,28 @@ async function handleCreate(req, res, shopRow) {
   if (shipAmount > 0) lines.push({ title: shopRow.shipping_label || 'Shipping', quantity: 1, price: shipAmount });
 
   const orderId = newOrderId();
+  const total = mypos.money(lines.reduce((s, l) => s + Number(l.price) * Number(l.quantity), 0));
+  orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(total), currency, cart, customer });
+  log('order created', orderId, shopRow.shop, total, currency, config.mypos.mode);
+
+  if (config.mypos.mode === 'embedded') {
+    // Hand the browser to the on-site payment page (GET through the proxy so Shopify renders it in the theme).
+    const next = `${config.proxyPath}/pay?order=${orderId}`;
+    return send(res, 200, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${next}"><script>location.replace(${JSON.stringify(next)})</script><a href="${next}">Continue to payment</a>`);
+  }
+  send(res, 200, hostedPaymentForm(orderId, shopRow));
+}
+
+// Build the signed IPCPurchase for a stored order and return the auto-submit page (myPOS hosted payment page).
+function hostedPaymentForm(orderId, shopRow) {
+  const order = orders.get(orderId);
+  const cart = JSON.parse(order.cart_json);
+  const customer = JSON.parse(order.customer_json);
+  const lines = cart.map((c) => ({ title: c.title, quantity: c.quantity, price: c.price }));
+  const shipAmount = Number(shopRow.shipping_amount || 0);
+  if (shipAmount > 0) lines.push({ title: shopRow.shipping_label || 'Shipping', quantity: 1, price: shipAmount });
   const built = mypos.buildPurchaseParams({
-    orderId, currency, cart: lines,
+    orderId, currency: order.currency, cart: lines,
     customer: { ...customer, country: countries.alpha3(customer.countryCode) },
     note: `${shopRow.name || shopRow.shop} order`,
     urls: {
@@ -101,9 +121,24 @@ async function handleCreate(req, res, shopRow) {
       notify: `${config.appUrl}/mypos/notify`,
     },
   });
-  orders.create({ order_id: orderId, shop: shopRow.shop, amount: Number(built.total), currency, cart, customer });
-  log('purchase created', orderId, shopRow.shop, built.total, currency);
-  send(res, 200, mypos.purchaseFormHtml(built.params, built.action));
+  log('hosted purchase', orderId, built.total, order.currency);
+  return mypos.purchaseFormHtml(built.params, built.action);
+}
+
+// GET /proxy/pay?order=  — embedded card form, rendered in the theme.
+function handleEmbeddedPay(res, shopRow, orderId) {
+  const order = orders.get(orderId);
+  if (!order || order.shop !== shopRow.shop) return sendLiquid(res, '<p>Order not found.</p>');
+  if (order.status === 'paid') return redirect(res, `${config.proxyPath}/thanks?order=${orderId}`);
+  if (order.status !== 'created') return sendLiquid(res, views.cancelLiquid());
+  sendLiquid(res, views.embeddedPayLiquid({ order, shopRow, creds: mypos.credentials() }));
+}
+
+// GET /proxy/hosted?order=  — fallback: same order, myPOS hosted page (Apple Pay / Google Pay).
+function handleHosted(res, shopRow, orderId) {
+  const order = orders.get(orderId);
+  if (!order || order.shop !== shopRow.shop || order.status !== 'created') return sendLiquid(res, '<p>Order not found.</p>');
+  send(res, 200, hostedPaymentForm(orderId, shopRow));
 }
 
 // POST /mypos/notify — server-to-server confirmation from myPOS. Must answer "OK".
@@ -242,7 +277,7 @@ async function route(req, res) {
 
   if (p === '/' || p === '/health') {
     const c = mypos.credentials();
-    return sendJson(res, 200, { ok: true, service: 'mypos-checkout', mypos: c.missing.length ? `missing ${c.missing.join(',')}` : (c.sandbox ? 'sandbox' : 'live'), stores: shops.all().length, proxy: `${config.proxyPath} -> ${config.appUrl}/proxy` });
+    return sendJson(res, 200, { ok: true, service: 'mypos-checkout', mypos: c.missing.length ? `missing ${c.missing.join(',')}` : (c.sandbox ? 'sandbox' : 'live'), mode: config.mypos.mode, stores: shops.all().length, proxy: `${config.proxyPath} -> ${config.appUrl}/proxy` });
   }
   if (p === '/auth') return handleAuth(req, res, url);
   if (p === '/auth/callback') return handleAuthCallback(req, res, url);
@@ -255,6 +290,8 @@ async function route(req, res) {
     const sub = p.slice('/proxy'.length) || '/';
     if (sub === '/' && req.method === 'GET') return handleCheckoutPage(res, shopRow);
     if (sub === '/create' && req.method === 'POST') return handleCreate(req, res, shopRow);
+    if (sub === '/pay') return handleEmbeddedPay(res, shopRow, url.searchParams.get('order') || '');
+    if (sub === '/hosted') return handleHosted(res, shopRow, url.searchParams.get('order') || '');
     if (sub === '/thanks') return sendLiquid(res, views.thanksLiquid({ order: orders.get(url.searchParams.get('order') || '') }));
     if (sub === '/cancel') return sendLiquid(res, views.cancelLiquid());
     return sendLiquid(res, '<p>Not found.</p>');
