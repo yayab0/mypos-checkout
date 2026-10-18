@@ -1,0 +1,53 @@
+{% comment %}
+  SOURCE STORE snippet — sends "Buy it now" / "Checkout" to the checkout store's myPOS checkout,
+  carrying the cart (matched by SKU, falling back to product handle + variant title).
+  Paste just before </body> in layout/theme.liquid of the SOURCE store (store A).
+  Set CHECKOUT_STORE to the checkout store's primary domain (store B, the one registered with myPOS).
+{% endcomment %}
+<script>
+(function () {
+  var CHECKOUT_STORE = 'https://checkout-securely.myshopify.com';
+  var PAY_PATH = '/apps/pay';
+
+  function go() {
+    fetch('/cart.js', { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (cart) {
+      var specs = (cart.items || []).map(function (i) {
+        return { sku: i.sku || '', handle: i.handle || '', variant: i.variant_title || '', q: i.quantity };
+      });
+      if (!specs.length) { window.location.href = '/cart'; return; }
+      window.location.href = CHECKOUT_STORE + PAY_PATH + '?items=' + encodeURIComponent(JSON.stringify(specs));
+    }).catch(function () { window.location.href = '/cart'; });
+  }
+
+  function buyNow(btn) {
+    var form = btn.closest('form[action*="/cart/add"]') || document.querySelector('form[action*="/cart/add"]');
+    if (!form) return go();
+    var fd = new FormData(form);
+    var body = new URLSearchParams();
+    fd.forEach(function (v, k) { body.append(k, v); });
+    if (!body.get('quantity')) body.append('quantity', '1');
+    fetch('/cart/clear.js', { method: 'POST' })
+      .then(function () {
+        return fetch('/cart/add.js', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' }, body: body.toString() });
+      })
+      .then(go, go);
+  }
+
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest(
+      '.shopify-payment-button__button, .shopify-payment-button__more-options, ' +
+      'button[name="checkout"], input[name="checkout"], a[href="/checkout"], a[href^="/checkout?"], ' +
+      '[data-mypos-checkout]'
+    );
+    if (!el) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (el.classList.contains('shopify-payment-button__button') || el.classList.contains('shopify-payment-button__more-options')) buyNow(el);
+    else go();
+  }, true);
+
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (f && /\/checkout(\?|$)/.test(f.getAttribute('action') || '')) { e.preventDefault(); e.stopImmediatePropagation(); go(); }
+  }, true);
+})();
+</script>

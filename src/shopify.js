@@ -99,6 +99,29 @@ async function priceCart(shopRow, items) {
   return out;
 }
 
+// Cross-store carts: map items described by SKU (or product handle + variant title) to THIS store's variant IDs.
+// specs: [{sku, handle, variant, q}] -> [{id (numeric variant id), quantity, unresolved?}]
+async function resolveItems(shopRow, specs) {
+  const out = [];
+  for (const s of specs.slice(0, 50)) {
+    const quantity = Math.max(1, Math.min(999, parseInt(s.q, 10) || 1));
+    let id = null;
+    if (s.sku) {
+      const d = await graphql(shopRow, `query($q:String!){ productVariants(first:1, query:$q){ nodes { id legacyResourceId } } }`, { q: `sku:"${String(s.sku).replace(/"/g, '')}"` });
+      id = d.productVariants.nodes[0]?.legacyResourceId || null;
+    }
+    if (!id && s.handle) {
+      const d = await graphql(shopRow, `query($h:String!){ productByHandle(handle:$h){ variants(first:100){ nodes { id legacyResourceId title } } } }`, { h: String(s.handle) });
+      const vs = d.productByHandle?.variants?.nodes || [];
+      const want = String(s.variant || '').trim().toLowerCase();
+      const v = vs.find((x) => x.title.toLowerCase() === want) || (vs.length === 1 ? vs[0] : null) || (!want ? vs[0] : null);
+      id = v?.legacyResourceId || null;
+    }
+    out.push(id ? { id: Number(id), quantity } : { unresolved: s, quantity });
+  }
+  return out;
+}
+
 // Create the paid order after myPOS confirms payment.
 async function createPaidOrder(shopRow, { order, cart, customer, shipping, ipcTrnref, cardLast4 }) {
   const money = (n) => ({ shopMoney: { amount: (Math.round(Number(n) * 100) / 100).toFixed(2), currencyCode: order.currency } });
@@ -161,5 +184,5 @@ async function refundShopifyOrder(shopRow, orderGid, amount, currency, note) {
 
 module.exports = {
   isValidShop, oauthStartUrl, verifyOauthHmac, exchangeToken, verifyProxySignature,
-  graphql, fetchShopInfo, priceCart, createPaidOrder, refundShopifyOrder, toVariantGid,
+  graphql, fetchShopInfo, priceCart, resolveItems, createPaidOrder, refundShopifyOrder, toVariantGid,
 };

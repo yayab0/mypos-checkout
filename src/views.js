@@ -229,6 +229,35 @@ function singlePageLiquid({ shopRow, error }) {
 </div>`;
 }
 
+// Landing page for carts sent from another store: resolve the items here, fill this store's cart, open checkout.
+function importCartLiquid({ items }) {
+  const P = config.proxyPath;
+  return `${CSS}
+<div class="mpc" style="grid-template-columns:1fr;max-width:640px">
+  <div class="card" style="text-align:center;padding:40px 24px">
+    <h2 id="mpcImpTitle">Preparing your secure checkout…</h2>
+    <p id="mpcImpMsg" class="muted" style="opacity:.7">One moment.</p>
+  </div>
+</div>
+<script>
+(function(){
+  var P = ${JSON.stringify(P)}, raw = ${JSON.stringify(String(items).slice(0, 8000))};
+  var title = document.getElementById('mpcImpTitle'), msg = document.getElementById('mpcImpMsg');
+  function fail(m){ title.textContent = 'We could not prepare your checkout'; msg.innerHTML = m + ' <a href="/collections/all">Browse our products</a>'; }
+  var specs; try { specs = JSON.parse(raw); } catch (e) { return fail('The link is invalid.'); }
+  fetch(P + '/resolve', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ items: JSON.stringify(specs) }).toString(), credentials:'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j.items || !j.items.length) return fail('These products are not available in this store.');
+      return fetch('/cart/clear.js', { method:'POST' })
+        .then(function(){ return fetch('/cart/add.js', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ items: j.items.map(function(i){ return { id: i.id, quantity: i.quantity }; }) }) }); })
+        .then(function(r){ if (!r.ok) throw new Error('add'); window.location.replace(P); });
+    })
+    .catch(function(){ fail('Please try again.'); });
+})();
+</script>`;
+}
+
 // Embedded payment page (step 2 of the classic flow): order summary + myPOS card form (iframe).
 function embeddedPayLiquid({ order, shopRow, creds }) {
   const cart = JSON.parse(order.cart_json || '[]');
@@ -364,4 +393,4 @@ function adminHtml({ shops, orders, myposStatus, flash }) {
     <table><tr><th>Ref</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Shopify</th><th>Refund</th></tr>${orderRows || '<tr><td colspan="8" class="muted">No orders yet.</td></tr>'}</table>`);
 }
 
-module.exports = { checkoutLiquid, singlePageLiquid, embeddedParams, embeddedPayLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };
+module.exports = { checkoutLiquid, singlePageLiquid, importCartLiquid, embeddedParams, embeddedPayLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };

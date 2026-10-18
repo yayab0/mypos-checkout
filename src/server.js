@@ -121,6 +121,21 @@ function orderLines(order, shopRow) {
   return lines;
 }
 
+// POST /proxy/resolve — cross-store cart: items from another store (by SKU / handle) -> this store's variant IDs.
+async function handleResolve(req, res, shopRow) {
+  const { fields } = await parseForm(req);
+  let specs;
+  try { specs = JSON.parse(fields.items || '[]'); } catch { specs = []; }
+  if (!Array.isArray(specs) || !specs.length) return sendJson(res, 400, { error: 'No items.' });
+  try {
+    const items = await shopify.resolveItems(shopRow, specs);
+    const found = items.filter((i) => i.id);
+    const missing = items.filter((i) => !i.id).map((i) => i.unresolved);
+    if (missing.length) log('resolve: unmatched items for', shopRow.shop, JSON.stringify(missing));
+    sendJson(res, 200, { items: found, missing });
+  } catch (e) { log('resolve failed', shopRow.shop, e.message); sendJson(res, 500, { error: 'Could not prepare your cart.' }); }
+}
+
 // POST /proxy/wallet-session — payment session token for the embedded Google Pay / Apple Pay buttons.
 async function handleWalletSession(req, res, shopRow) {
   const { fields } = await parseForm(req);
@@ -364,7 +379,12 @@ async function route(req, res) {
     const shopRow = shops.get(String(q.shop || '').toLowerCase());
     if (!shopRow) return sendLiquid(res, '<p>This store has not installed the checkout app yet.</p>');
     const sub = p.slice('/proxy'.length) || '/';
-    if (sub === '/' && req.method === 'GET') return handleCheckoutPage(res, shopRow);
+    if (sub === '/' && req.method === 'GET') {
+      const items = url.searchParams.get('items');
+      if (items) return sendLiquid(res, views.importCartLiquid({ items }));
+      return handleCheckoutPage(res, shopRow);
+    }
+    if (sub === '/resolve' && req.method === 'POST') return handleResolve(req, res, shopRow);
     if (sub === '/create' && req.method === 'POST') return handleCreate(req, res, shopRow);
     if (sub === '/start' && req.method === 'POST') return handleStart(req, res, shopRow);
     if (sub === '/details' && req.method === 'POST') return handleDetails(req, res, shopRow);

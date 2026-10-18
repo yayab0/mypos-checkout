@@ -149,7 +149,17 @@ function proxyQuery(params) {
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(orders.get(sj.orderId).status, 'paid'); assert.equal(orders.get(sj.orderId).ipc_trnref, '555'); assert.equal(createdOrders.length, 2);
 
-  // 13. admin auth + page
+  // 13. cross-store cart: landing page with items param, and /resolve mapping SKU/handle -> this store's variants
+  shopify.resolveItems = async (_shop, specs) => specs.map((s) => (s.sku === 'GEN-10KW' ? { id: 777, quantity: Number(s.q) } : s.handle === 'shed' ? { id: 888, quantity: Number(s.q) } : { unresolved: s, quantity: Number(s.q) }));
+  const specs = encodeURIComponent(JSON.stringify([{ sku: 'GEN-10KW', q: 1 }, { handle: 'shed', variant: 'Grey', q: 2 }, { sku: 'NOPE', q: 1 }]));
+  const q4 = proxyQuery({ shop: 'test-store.myshopify.com', path_prefix: '/apps/pay', timestamp: String(Math.floor(Date.now() / 1000)), items: decodeURIComponent(specs) });
+  const land = await fetch(`${base}/proxy?${q4}`); const landHtml = await land.text();
+  assert.match(land.headers.get('content-type'), /application\/liquid/); assert.match(landHtml, /Preparing your secure checkout/); assert.match(landHtml, /\/resolve/);
+  const rs = await fetch(`${base}/proxy/resolve?${q}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ items: decodeURIComponent(specs) }).toString() });
+  const rj = await rs.json();
+  assert.deepEqual(rj.items, [{ id: 777, quantity: 1 }, { id: 888, quantity: 2 }]); assert.equal(rj.missing.length, 1);
+
+  // 14. admin auth + page
   assert.equal((await fetch(`${base}/admin`)).status, 401);
   const adm = await fetch(`${base}/admin`, { headers: { authorization: 'Basic ' + Buffer.from('a:b').toString('base64') } });
   assert.equal(adm.status, 200); assert.match(await adm.text(), /#1001/);
