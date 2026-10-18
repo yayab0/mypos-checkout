@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: mypos-checkout
+    runtime: node
+    plan: starter
+    buildCommand: "echo no build needed"
+    startCommand: "npm start"
+    healthCheckPath: /health
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: DB_PATH
+        value: /var/data/mypos-checkout.sqlite
+      - key: APP_URL
+        sync: false
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SHOPIFY_SCOPES
+        value: write_orders,read_products
+      - key: PROXY_PREFIX
+        value: apps
+      - key: PROXY_SUBPATH
+        value: pay
+      - key: MYPOS_CONFIG_PACK
+        sync: false
+      - key: MYPOS_SANDBOX
+        value: "1"
+      - key: MYPOS_LANG
+        value: EN

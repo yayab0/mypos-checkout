@@ -1,0 +1,16 @@
+{
+  "name": "mypos-checkout",
+  "version": "1.0.0",
+  "description": "Store-branded myPOS hosted checkout for Shopify stores (app proxy + OAuth, zero dependencies)",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "test": "node --no-warnings=ExperimentalWarning test/run.js"
+  },
+  "license": "UNLICENSED"
+}

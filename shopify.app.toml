@@ -1,0 +1,26 @@
+# Reference settings for the Shopify app (paste the same values in the dev dashboard).
+# client_id is filled in once the app exists.
+name = "myPOS Checkout"
+client_id = ""
+application_url = "https://mypos-checkout.onrender.com/admin"
+embedded = false
+
+[access_scopes]
+scopes = "write_orders,read_products"
+
+[auth]
+redirect_urls = [
+  "https://mypos-checkout.onrender.com/auth/callback"
+]
+
+[app_proxy]
+url = "https://mypos-checkout.onrender.com/proxy"
+subpath = "pay"
+prefix = "apps"
+
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "https://mypos-checkout.onrender.com/webhooks/compliance"
