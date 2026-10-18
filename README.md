@@ -68,3 +68,9 @@ cp .env.example .env   # fill in
 npm start              # http://localhost:10000
 npm test               # offline end-to-end test with a fake store + fake myPOS callback
 ```
+
+## Checkout modes (`CHECKOUT_MODE`)
+- `embedded` (default): the card form (myPOS Embedded SDK iframe) is shown on `store.com/apps/pay/pay` — the customer
+  pays without leaving the store. A link offers the myPOS hosted page for Apple Pay / Google Pay.
+- `redirect`: the customer is sent to myPOS's hosted payment page (all payment methods).
+Both modes share the same order flow, notify handling, Shopify order creation and refunds.

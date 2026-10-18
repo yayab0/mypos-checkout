@@ -48,6 +48,9 @@ const config = {
     publicCert: pem(env('MYPOS_PUBLIC_CERT')),
     sandbox: env('MYPOS_SANDBOX', '1') !== '0',
     lang: env('MYPOS_LANG', 'EN'),
+    // embedded = card form inside /apps/pay (myPOS Embedded SDK); redirect = myPOS hosted page
+    mode: env('CHECKOUT_MODE', 'embedded') === 'redirect' ? 'redirect' : 'embedded',
+    embeddedSdkUrl: env('MYPOS_EMBEDDED_SDK_URL', 'https://developers.mypos.com/repository/mypos-embedded-sdk.js'),
     version: '1.4',
     source: 'mypos-checkout-shopify',
   },

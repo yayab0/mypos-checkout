@@ -82,6 +82,66 @@ function checkoutLiquid({ shopRow, error }) {
 </div>`;
 }
 
+// Embedded payment page: order summary + myPOS card form (iframe) on the store's own domain.
+function embeddedPayLiquid({ order, shopRow, creds }) {
+  const cart = JSON.parse(order.cart_json || '[]');
+  const customer = JSON.parse(order.customer_json || '{}');
+  const ship = Number(shopRow.shipping_amount || 0);
+  const items = cart.map((c) => ({ article: String(c.title).slice(0, 120), quantity: c.quantity, price: Number(Number(c.price).toFixed(2)), currency: order.currency }));
+  if (ship > 0) items.push({ article: shopRow.shipping_label || 'Shipping', quantity: 1, price: Number(ship.toFixed(2)), currency: order.currency });
+  const params = {
+    sid: creds.sid, walletNumber: creds.wallet, keyIndex: Number(creds.keyIndex) || 1,
+    ipcLanguage: String(config.mypos.lang || 'en').toLowerCase(),
+    amount: Number(Number(order.amount).toFixed(2)), currency: order.currency, orderID: order.order_id,
+    urlNotify: `${config.appUrl}/mypos/notify`,
+    urlOk: `${config.appUrl}/mypos/ok?order=${order.order_id}`,
+    urlCancel: `${config.appUrl}/mypos/cancel?order=${order.order_id}`,
+    cartItems: items,
+  };
+  const thanksUrl = `${config.proxyPath}/thanks?order=${order.order_id}`;
+  const hostedUrl = `${config.proxyPath}/hosted?order=${order.order_id}`;
+  const fmt = (n) => `{{ ${Math.round(Number(n) * 100)} | money }}`;
+  return `${CSS}
+<style>#myPOSEmbeddedCheckout{min-height:620px}.mpc .alt{display:block;text-align:center;margin-top:14px;font-size:.9em}</style>
+<div class="mpc">
+  <div>
+    <h2>Payment</h2>
+    <div class="card">
+      <div id="mpcErr" class="err" style="display:none"></div>
+      <div id="myPOSEmbeddedCheckout"></div>
+      <a class="alt" href="${hostedUrl}">Prefer Apple Pay / Google Pay? Pay on the secure myPOS page →</a>
+      <div class="secure">🔒 Card details are entered directly with myPOS and never touch this store.</div>
+    </div>
+    <p style="font-size:.85em;opacity:.7;margin-top:12px"><a href="${config.proxyPath}">← Back to details</a></p>
+  </div>
+  <div>
+    <h2>Your order</h2>
+    <div class="card">
+      ${cart.map((c) => `<div class="item"><div class="t">${esc(c.title)}<small>Qty ${c.quantity}</small></div><div>${fmt(c.price * c.quantity)}</div></div>`).join('')}
+      <div class="tot" style="margin-top:12px"><span>${esc(shopRow.shipping_label || 'Shipping')}</span><span>${ship > 0 ? fmt(ship) : 'Free'}</span></div>
+      <div class="tot g"><span>Total</span><span>${fmt(order.amount)}</span></div>
+      <div style="margin-top:14px;font-size:.85em;opacity:.75">${esc(customer.firstName || '')} ${esc(customer.lastName || '')}<br>${esc(customer.address || '')}, ${esc(customer.city || '')} ${esc(customer.zip || '')}<br>${esc(customer.email || '')}</div>
+    </div>
+  </div>
+</div>
+<script src="${esc(config.mypos.embeddedSdkUrl)}"></script>
+<script>
+(function(){
+  var params = ${JSON.stringify(params)};
+  var err = document.getElementById('mpcErr');
+  function fail(msg){ err.textContent = msg || 'The payment could not be completed. Please try again or use the myPOS page link below.'; err.style.display='block'; }
+  if (!window.MyPOSEmbedded) { fail('The payment form could not be loaded.'); return; }
+  try {
+    MyPOSEmbedded.createPayment('myPOSEmbeddedCheckout', params, {
+      isSandbox: ${creds.sandbox ? 'true' : 'false'},
+      onSuccess: function(){ try{fetch('/cart/clear.js',{method:'POST'})}catch(e){} window.location.href = ${JSON.stringify(thanksUrl)}; },
+      onError: function(e){ fail(e && (e.message || e.msg) ? String(e.message || e.msg) : ''); }
+    });
+  } catch (e) { fail(); }
+})();
+</script>`;
+}
+
 function thanksLiquid({ order }) {
   const paid = order && order.status === 'paid';
   const pending = order && order.status === 'created';
@@ -167,4 +227,4 @@ function adminHtml({ shops, orders, myposStatus, flash }) {
     <table><tr><th>Ref</th><th>Store</th><th>Customer</th><th>Items</th><th>Amount</th><th>Status</th><th>Shopify</th><th>Refund</th></tr>${orderRows || '<tr><td colspan="8" class="muted">No orders yet.</td></tr>'}</table>`);
 }
 
-module.exports = { checkoutLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };
+module.exports = { checkoutLiquid, embeddedPayLiquid, thanksLiquid, cancelLiquid, page, adminHtml, esc };
