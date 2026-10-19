@@ -280,7 +280,7 @@ async function paymentSessionCreate({ orderId, currency, cart, note }) {
   p.push(['Signature', sign(p, c.privateKey)]);
   const r = await ipcPost(p);
   const d = r.json || {};
-  if (String(d.Status) !== '0' || !d.SessionToken) throw new Error(`Payment session failed: ${d.StatusMsg || r.text.slice(0, 200)}`);
+  if (String(d.Status) !== '0' || !d.SessionToken) throw new Error(`Payment session failed: ${d.StatusMsg || ''} ${JSON.stringify(r.json || r.text).slice(0, 400)}`);
   return { sessionToken: d.SessionToken, expires: d.ExpDate };
 }
 

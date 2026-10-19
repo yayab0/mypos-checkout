@@ -171,7 +171,18 @@ function singlePageLiquid({ shopRow, error, attrs = {} }) {
     function hideErr(){ err.style.display = 'none'; }
     function fields(){ var o = {}; new FormData(form).forEach(function(v,k){ o[k] = v; }); return o; }
     function report(method, reason){ if (!orderId) return; try { post('/event', { orderId: orderId, method: method, reason: String(reason || '').slice(0, 300) }).catch(function(){}); } catch (e) {} }
-    function msgText(m){ if (!m) return ''; if (typeof m === 'string') return m; try { return m.message || m.msg || m.text || m.description || m.error || JSON.stringify(m); } catch (e) { return ''; } }
+    function msgText(m){
+      if (!m) return ''; if (typeof m === 'string') return m;
+      try {
+        var parts = [];
+        ['code','errorCode','status','statusCode','error_code'].forEach(function(k){ if (m[k] !== undefined && m[k] !== null && typeof m[k] !== 'object') parts.push(k + '=' + m[k]); });
+        var t = m.message || m.msg || m.text || m.description || m.error || m.statusMsg || m.StatusMsg;
+        if (t && typeof t === 'object') t = msgText(t);
+        if (t) parts.push(String(t));
+        if (!parts.length) { var j = JSON.stringify(m); if (j && j !== '{}') parts.push(j.slice(0, 300)); }
+        return parts.join(' ');
+      } catch (e) { return String(m); }
+    }
     function post(path, data){ var b = new URLSearchParams(data); return fetch(P + path, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: b.toString(), credentials:'same-origin' }).then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error || 'Request failed'); return j; }); }); }
     function loadSdk(url){ return new Promise(function(res, rej){ if (window.MyPOSEmbedded) return res(); var s = document.createElement('script'); s.src = url; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
     function valid(){ var f = fields(); var missing = ['email','firstName','lastName','address','city','zip'].filter(function(k){ return !String(f[k]||'').trim(); }); if (missing.length || !/.+@.+\\..+/.test(f.email)) { showErr('Please fill in your email and delivery address.'); form.querySelector('[name="'+(missing[0]||'email')+'"]').focus(); return null; } return f; }
