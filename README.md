@@ -74,3 +74,29 @@ npm test               # offline end-to-end test with a fake store + fake myPOS 
   pays without leaving the store. A link offers the myPOS hosted page for Apple Pay / Google Pay.
 - `redirect`: the customer is sent to myPOS's hosted payment page (all payment methods).
 Both modes share the same order flow, notify handling, Shopify order creation and refunds.
+
+## PayPal module (`/paypal`)
+
+An independent PayPal checkout + donations module lives in `src/paypal/` and is mounted at
+`/paypal` by one line in `src/server.js`. It shares nothing with the myPOS flow except the
+process and the `/var/data` disk; its env vars are all `PAYPAL_*`. With no
+`PAYPAL_CLIENT_ID`/`PAYPAL_CLIENT_SECRET` set, `/paypal/*` answers 503 and the rest of the
+service is unaffected.
+
+| URL | What |
+|---|---|
+| `/paypal/checkout?amount=49.99&currency=GBP` | checkout with a fixed amount |
+| `/paypal/checkout?name=…&price=…&qty=…&shipping=…&ref=…` | checkout with line items (`PHYSICAL_GOODS`) |
+| `/paypal/donate` | donation page (`DONATION`, no shipping) — only when `PAYPAL_CHARITY_NAME` is set |
+| `/paypal/monitor?token=…` | live monitor: clock 1 / clock 2 per order, running checkouts, failures classified (buyer / your account / risk / expired), held captures, webhooks |
+| `/paypal/api/live?token=…` | JSON list of in-flight checkouts with clock start/end/remaining |
+| `/paypal/api/webhooks/paypal` | register this in the PayPal dashboard, then set `PAYPAL_WEBHOOK_ID` |
+| `/paypal/healthz` | module health |
+
+Flow: the buyer clicks the PayPal button → `POST /paypal/api/orders` creates the PayPal order
+(clock 1 starts) → the PayPal popup opens (clock 2 starts) → buyer taps Pay Now →
+`POST /paypal/api/orders/:id/capture` (must land inside clock 2). Both clocks default to 6 h.
+Orders and the event log persist to `PAYPAL_DATA_DIR` (`paypal-orders.json`,
+`paypal-events.jsonl`) and are reloaded on boot.
+
+Test: `node test/paypal.js` runs the module inside the real server against a mock PayPal.

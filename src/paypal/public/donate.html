@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Donate</title>
+  <style>
+    :root { --ink:#1a1a1a; --muted:#6b6b6b; --line:#e6e6e6; --bg:#f7f7f5; --card:#fff; --ok:#1d7a4f; --bad:#b42318; --accent:#0f6e56; --accent-bg:#e1f5ee; }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width: 440px; margin: 40px auto; padding: 0 16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+    .presets { display:grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap:8px; margin-bottom: 12px; }
+    .presets button { font: inherit; padding: 12px 0; border:1px solid var(--line); border-radius: 10px; background: var(--card); cursor:pointer; color: var(--ink); font-weight: 600; }
+    .presets button.on { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+    .custom { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:10px; padding: 0 12px; margin-bottom: 14px; }
+    .custom span { color: var(--muted); }
+    .custom input { flex:1; border:0; outline:0; font: inherit; padding: 12px 0; background: transparent; color: var(--ink); min-width: 0; }
+    textarea { width:100%; font: inherit; padding: 10px 12px; border:1px solid var(--line); border-radius: 10px; resize: vertical; min-height: 64px; background: var(--card); color: var(--ink); }
+    label.chk { display:flex; align-items:center; gap:8px; font-size: 14px; color: var(--muted); margin: 10px 0 16px; }
+    #paypal-button { min-height: 48px; }
+    #status { margin-top: 14px; font-size: 14px; color: var(--muted); min-height: 1.5em; }
+    #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+    .fine { font-size: 12px; color: var(--muted); margin-top: 18px; }
+    .total { font-size: 15px; margin: 4px 0 14px; } .total b { font-size: 18px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1 id="title">Make a donation</h1>
+    <div class="sub" id="sub"></div>
+
+    <div class="presets" id="presets"></div>
+    <div class="custom"><span id="sym">£</span><input id="custom" type="number" inputmode="decimal" min="1" step="0.01" placeholder="Other amount"></div>
+
+    <textarea id="message" maxlength="127" placeholder="Message (optional)"></textarea>
+    <label class="chk"><input type="checkbox" id="anon"> Keep my donation anonymous</label>
+
+    <div class="total">Donation: <b id="total">—</b></div>
+    <div id="paypal-button"></div>
+    <div id="status"></div>
+    <div class="fine" id="fine">Donations are processed securely by PayPal. Your donation is not a purchase and is not covered by PayPal Purchase Protection.</div>
+  </div>
+</main>
+
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (msg, cls = "") => { $("status").textContent = msg; $("status").className = cls; };
+  const q = new URLSearchParams(location.search);
+
+  const cfg = await (await fetch("__BASE__/api/config")).json();
+  if (!cfg.donations) { setStatus("Donations are not enabled on this server (set CHARITY_NAME).", "bad"); return; }
+  const currency = (q.get("currency") || cfg.currency || "GBP").toUpperCase();
+  const fmt = (n) => new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(n));
+  $("sym").textContent = fmt(0).replace(/[\d.,\s]/g, "") || currency;
+  $("sub").textContent = `Supporting ${cfg.donations.charity}${cfg.env === "sandbox" ? " · sandbox" : ""}`;
+  document.title = `Donate to ${cfg.donations.charity}`;
+
+  // Amount state
+  let amount = Number(q.get("amount")) || cfg.donations.presets[1] || cfg.donations.presets[0] || 10;
+  const presets = cfg.donations.presets;
+  const render = () => {
+    [...$("presets").children].forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === amount));
+    $("total").textContent = amount >= cfg.donations.min ? fmt(amount) : "—";
+  };
+  for (const v of presets) {
+    const b = document.createElement("button"); b.type = "button"; b.dataset.v = v; b.textContent = fmt(v).replace(/\.00$/, "");
+    b.onclick = () => { amount = v; $("custom").value = ""; render(); };
+    $("presets").appendChild(b);
+  }
+  $("custom").oninput = (e) => { amount = Number(e.target.value) || 0; render(); };
+  if (!presets.includes(amount)) $("custom").value = amount;
+  render();
+
+  // PayPal SDK
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(cfg.clientId)}&currency=${currency}&intent=capture&components=buttons`;
+    s.onload = resolve; s.onerror = () => reject(new Error("PayPal SDK failed to load"));
+    document.head.appendChild(s);
+  }).catch((e) => setStatus(e.message, "bad"));
+
+  let currentOrderId = null;
+  const report = (orderId, type, extra = {}) =>
+    orderId && fetch(`__BASE__/api/orders/${encodeURIComponent(orderId)}/events`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true,
+      body: JSON.stringify({ type, ...extra }),
+    }).catch(() => {});
+
+  // Same two clocks as the checkout: createOrder = clock 1, popup = clock 2, capture ends it.
+  async function createOrder() {
+    setStatus("");
+    if (!(amount >= cfg.donations.min)) { setStatus(`Please enter at least ${fmt(cfg.donations.min)}.`, "bad"); throw new Error("amount"); }
+    const r = await fetch("__BASE__/api/orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-idempotency-key": crypto.randomUUID() },
+      body: JSON.stringify({ kind: "donation", amount: amount.toFixed(2), currency, message: $("message").value.trim() || undefined, anonymous: $("anon").checked, reference: q.get("ref") || undefined }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.issue || j.error || "Could not start donation");
+    currentOrderId = j.id;
+    report(j.id, "PAYER_LANDED");
+    return j.id;
+  }
+
+  async function onApprove(data, actions) {
+    setStatus("Confirming your donation…");
+    report(data.orderID, "APPROVED", { fundingSource: data.paymentSource || undefined });
+    const r = await fetch(`__BASE__/api/orders/${data.orderID}/capture`, { method: "POST" });
+    const j = await r.json();
+    if (j.status === "COMPLETED" || j.status === "PENDING") {
+      setStatus("Thank you! Redirecting…", "ok");
+      location.href = `__BASE__/success?order=${encodeURIComponent(data.orderID)}&capture=${encodeURIComponent(j.captureId || "")}&kind=donation${j.status === "PENDING" ? "&pending=1" : ""}`;
+      return;
+    }
+    if (j.instrumentDeclined) { setStatus("That payment method was declined — please choose another.", "bad"); report(data.orderID, "INSTRUMENT_RESTART"); return actions.restart(); }
+    if (j.recoverable) { setStatus("That session expired. Click the button to try again.", "bad"); return; }
+    setStatus("The donation could not be completed. Please try again or use another method.", "bad");
+  }
+
+  paypal.Buttons({
+    style: { layout: "vertical", shape: "rect", label: "donate" },
+    createOrder, onApprove,
+    onCancel: (data) => { report(data?.orderID || currentOrderId, "CANCELLED"); setStatus("Donation cancelled. You can try again whenever you're ready."); },
+    onError: (err) => { if (String(err?.message) === "amount") return; console.error(err); report(currentOrderId, "SDK_ERROR", { message: String(err?.message || err) }); setStatus("Something went wrong starting PayPal. Please refresh and try again.", "bad"); },
+  }).render("#paypal-button");
+})();
+</script>
+</body>
+</html>

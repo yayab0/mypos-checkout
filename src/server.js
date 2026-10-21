@@ -8,6 +8,7 @@ const mypos = require('./mypos');
 const shopify = require('./shopify');
 const views = require('./views');
 const countries = require('./countries');
+const paypal = require('./paypal').create(); // independent PayPal checkout/donations, mounted at /paypal
 
 // ---------- small helpers ----------
 
@@ -439,6 +440,9 @@ async function route(req, res) {
   if (p === '/mypos/cancel') return handleReturn(req, res, 'cancel');
 
   if (p === '/admin' || p.startsWith('/admin/')) return handleAdmin(req, res, url);
+
+  // PayPal checkout + donations (src/paypal). Own env vars, own data files; never touches myPOS state.
+  if (p === paypal.prefix || p.startsWith(paypal.prefix + '/')) return paypal.handle(req, res, url);
 
   // Shopify compliance webhooks (customers/data_request etc.): verify HMAC and acknowledge.
   if (p.startsWith('/webhooks/')) {

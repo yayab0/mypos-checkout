@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout</title>
+  <style>
+    :root { --ink:#1a1a1a; --muted:#6b6b6b; --line:#e6e6e6; --bg:#f7f7f5; --card:#fff; --ok:#1d7a4f; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+    main { max-width: 440px; margin: 40px auto; padding: 0 16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .brand { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+    table { width:100%; border-collapse: collapse; margin-bottom: 16px; }
+    td { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+    td:last-child { text-align: right; white-space: nowrap; }
+    tr.total td { border-bottom: 0; font-weight: 600; font-size: 17px; padding-top: 12px; }
+    .qty { color: var(--muted); }
+    #paypal-button { margin-top: 8px; min-height: 48px; }
+    #status { margin-top: 14px; font-size: 14px; color: var(--muted); min-height: 1.5em; }
+    #status.ok { color: var(--ok); }
+    #status.bad { color: var(--bad); }
+    .fine { font-size: 12px; color: var(--muted); margin-top: 18px; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Order summary</h1>
+    <div class="brand" id="brand"></div>
+    <table id="lines"></table>
+    <div id="paypal-button"></div>
+    <div id="status"></div>
+    <div class="fine">Payments are processed securely by PayPal. You'll choose your shipping address and payment method on the next screen.</div>
+  </div>
+</main>
+
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (msg, cls = "") => { $("status").textContent = msg; $("status").className = cls; };
+
+  // ---------------------------------------------------------------------
+  // 1. Build the cart from the URL. This is OUR source of truth.
+  //    Examples:
+  //      /checkout?amount=49.99&currency=GBP
+  //      /checkout?currency=GBP&shipping=4.99&items=<base64 json [{name,price,quantity,sku}]>
+  //      /checkout?name=Cast+iron+pan&price=39.00&qty=2&currency=GBP&ref=ORDER-1234
+  // ---------------------------------------------------------------------
+  const q = new URLSearchParams(location.search);
+  const cart = { currency: (q.get("currency") || "GBP").toUpperCase(), items: [], shipping: q.get("shipping") || "0", reference: q.get("ref") || undefined };
+  if (q.get("items")) {
+    try { cart.items = JSON.parse(atob(q.get("items"))); } catch { /* ignore malformed */ }
+  } else if (q.get("name") && q.get("price")) {
+    cart.items = [{ name: q.get("name"), price: q.get("price"), quantity: Number(q.get("qty") || 1), sku: q.get("sku") || undefined }];
+  } else if (q.get("amount")) {
+    cart.amount = q.get("amount");
+  }
+  if (!cart.items.length && !cart.amount) {
+    setStatus("No order found. Open this page with an amount or items in the link.", "bad");
+    return;
+  }
+
+  // Render the summary
+  const fmt = (n) => new Intl.NumberFormat(undefined, { style: "currency", currency: cart.currency }).format(Number(n));
+  const rows = [];
+  let itemTotal = 0;
+  for (const it of cart.items) {
+    const line = Number(it.price) * Number(it.quantity || 1);
+    itemTotal += line;
+    rows.push(`<tr><td>${esc(it.name)} <span class="qty">× ${Number(it.quantity || 1)}</span></td><td>${fmt(line)}</td></tr>`);
+  }
+  if (cart.items.length) {
+    rows.push(`<tr><td>Shipping</td><td>${Number(cart.shipping) ? fmt(cart.shipping) : "Free"}</td></tr>`);
+    rows.push(`<tr class="total"><td>Total</td><td>${fmt(itemTotal + Number(cart.shipping))}</td></tr>`);
+  } else {
+    rows.push(`<tr class="total"><td>Total</td><td>${fmt(cart.amount)}</td></tr>`);
+  }
+  $("lines").innerHTML = rows.join("");
+
+  // ---------------------------------------------------------------------
+  // 2. Load the PayPal SDK with the server's public client id.
+  // ---------------------------------------------------------------------
+  const cfg = await (await fetch("__BASE__/api/config")).json();
+  $("brand").textContent = cfg.brand + (cfg.env === "sandbox" ? " · sandbox" : "");
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(cfg.clientId)}&currency=${cart.currency}&intent=capture&components=buttons`;
+    s.onload = resolve; s.onerror = () => reject(new Error("PayPal SDK failed to load"));
+    document.head.appendChild(s);
+  });
+
+  // ---------------------------------------------------------------------
+  // 3. The button. createOrder = clock 1 starts. Popup opens = clock 2 starts.
+  //    onApprove = buyer clicked Pay Now; we capture inside clock 2.
+  // ---------------------------------------------------------------------
+  let currentOrderId = null;
+
+  // Milestones reported to the server so the monitor can show clock 1 → clock 2 → capture.
+  const report = (orderId, type, extra = {}) =>
+    orderId && fetch(`__BASE__/api/orders/${encodeURIComponent(orderId)}/events`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true,
+      body: JSON.stringify({ type, ...extra }),
+    }).catch(() => {});
+
+  async function createOrder() {
+    setStatus("");
+    const r = await fetch("__BASE__/api/orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-idempotency-key": crypto.randomUUID() },
+      body: JSON.stringify(cart),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.issue || j.error || "Could not start checkout");
+    currentOrderId = j.id;
+    // Returning the id hands it to the PayPal popup → buyer lands on PayPal → clock 2 starts.
+    report(j.id, "PAYER_LANDED");
+    return j.id;
+  }
+
+  async function onApprove(data, actions) {
+    setStatus("Confirming your payment…");
+    report(data.orderID, "APPROVED", { fundingSource: data.paymentSource || undefined });
+    const r = await fetch(`__BASE__/api/orders/${data.orderID}/capture`, { method: "POST" });
+    const j = await r.json();
+
+    if (j.status === "COMPLETED" || j.status === "PENDING") {
+      setStatus("Payment complete. Redirecting…", "ok");
+      location.href = `__BASE__/success?order=${encodeURIComponent(data.orderID)}&capture=${encodeURIComponent(j.captureId || "")}${j.status === "PENDING" ? "&pending=1" : ""}`;
+      return;
+    }
+    if (j.instrumentDeclined) {
+      // Buyer's chosen funding source failed. Same order, PayPal reopens the funding screen.
+      setStatus("That payment method was declined — please choose another.", "bad");
+      report(data.orderID, "INSTRUMENT_RESTART");
+      return actions.restart();
+    }
+    if (j.recoverable) {
+      // Clock 2 ran out (or order vanished). The cart is still here: next click makes a fresh order.
+      setStatus("That checkout session expired. Click the button to try again.", "bad");
+      return;
+    }
+    setStatus("Payment could not be completed. Please try again or use another method.", "bad");
+  }
+
+  paypal.Buttons({
+    style: { layout: "vertical", shape: "rect", label: "paypal" },
+    createOrder,
+    onApprove,
+    onCancel: (data) => { report(data?.orderID || currentOrderId, "CANCELLED"); setStatus("Checkout cancelled. You can try again whenever you're ready."); },
+    onError: (err) => {
+      console.error(err);
+      report(currentOrderId, "SDK_ERROR", { message: String(err?.message || err) });
+      setStatus("Something went wrong starting PayPal. Please refresh and try again.", "bad");
+    },
+  }).render("#paypal-button");
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+})();
+</script>
+</body>
+</html>

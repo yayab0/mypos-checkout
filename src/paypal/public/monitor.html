@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout monitor</title>
+  <style>
+    :root { --ink:#1a1a1a; --muted:#6b6b6b; --line:#e3e3df; --bg:#f4f4f1; --card:#fff; --ok:#1d7a4f; --warn:#9a6700; --bad:#b42318; --blue:#185fa5; --purple:#534ab7; --teal:#0f6e56; }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+    header { display:flex; align-items:baseline; gap:14px; padding:16px 20px; }
+    header h1 { font-size:18px; margin:0; }
+    header .sub { color:var(--muted); font-size:13px; }
+    main { padding: 0 20px 40px; display:grid; gap:16px; }
+    .tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; }
+    .tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+    .tile .n { font-size:24px; font-weight:600; line-height:1.1; }
+    .tile .l { color:var(--muted); font-size:12px; margin-top:2px; }
+    .tile.bad .n { color:var(--bad); } .tile.warn .n { color:var(--warn); } .tile.ok .n { color:var(--ok); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+    .card h2 { font-size:14px; margin:0 0 10px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+    td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    tr:last-child td { border-bottom:0; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+    .p-clock1 { background:#eeedfe; color:var(--purple); }
+    .p-clock2 { background:#e1f5ee; color:var(--teal); }
+    .p-approved_awaiting_capture { background:#e6f1fb; color:var(--blue); }
+    .p-completed { background:#eaf3de; color:var(--ok); }
+    .p-held { background:#faeeda; color:var(--warn); }
+    .p-failed, .p-clock1_expired, .p-clock2_expired { background:#fcebeb; color:var(--bad); }
+    .p-cancelled { background:#f1efe8; color:var(--muted); }
+    .bar { position:relative; height:8px; background:#eee; border-radius:4px; overflow:hidden; min-width:110px; }
+    .bar > i { position:absolute; left:0; top:0; bottom:0; border-radius:4px; }
+    .bar.c1 > i { background:var(--purple); } .bar.c2 > i { background:var(--teal); }
+    .tiny { color:var(--muted); font-size:11px; white-space:nowrap; }
+    #feed { max-height: 420px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; line-height:1.55; }
+    .ev { padding:3px 0; border-bottom:1px dashed var(--line); display:grid; grid-template-columns: 78px 60px 1fr; gap:8px; }
+    .ev .t { color:var(--muted); } .ev .lv { font-weight:700; }
+    .ev.info .lv { color:var(--blue); } .ev.warn .lv { color:var(--warn); } .ev.error .lv { color:var(--bad); }
+    .ev.error { background:#fff5f5; }
+    .flag { border-left:4px solid var(--bad); padding:10px 12px; background:#fff5f5; border-radius:0; margin-bottom:10px; font-size:13px; }
+    .flag b { color:var(--bad); }
+    .cat { font-size:11px; color:var(--muted); }
+    .cat.merchant_account, .cat.risk { color:var(--bad); font-weight:700; }
+    .live { display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap:10px; }
+    .lc { border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+    .lc .hd { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+    .lc .hd code { font-size:13px; font-weight:600; }
+    .lc .big { font-size:22px; font-weight:600; line-height:1.1; font-variant-numeric: tabular-nums; }
+    .lc .big.c1 { color:var(--purple); } .lc .big.c2 { color:var(--teal); } .lc .big.soon { color:var(--bad); }
+    .lc .row { display:grid; grid-template-columns: 110px 1fr; gap:4px 8px; font-size:12px; margin-top:6px; }
+    .lc .row .k { color:var(--muted); } .lc .row .v { font-variant-numeric: tabular-nums; }
+    .lc .row .on { font-weight:600; }
+    .empty { color:var(--muted); font-size:13px; }
+    @media (max-width: 720px) { .hide-sm { display:none; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Checkout monitor</h1>
+  <span class="sub" id="meta">connecting…</span>
+</header>
+<main>
+  <div id="flags"></div>
+  <div class="tiles" id="tiles"></div>
+  <div class="card">
+    <h2>Running now — <span id="livecount">0</span> checkout(s) in progress</h2>
+    <div id="live" class="live"></div>
+  </div>
+  <div class="card">
+    <h2>Orders — clock 1 (link open) → clock 2 (pay + capture)</h2>
+    <table>
+      <thead><tr><th>Order</th><th>Kind</th><th>Amount</th><th>Phase</th><th>Clock 1</th><th>Clock 2</th><th class="hide-sm">Funding</th><th>Outcome</th></tr></thead>
+      <tbody id="orders"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Event feed</h2>
+    <div id="feed"></div>
+  </div>
+</main>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const token = q.get("token") || "";
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  const hhmm = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" }) : "—";
+  const mmss = (ms) => { const s = Math.max(0, Math.round(ms/1000)); const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60; return h ? `${h}h ${String(m).padStart(2,"0")}m` : `${m}m ${String(ss).padStart(2,"0")}s`; };
+  const phaseLabel = { clock1:"Clock 1 — waiting for buyer to land", clock2:"Clock 2 — buyer on PayPal", approved_awaiting_capture:"Approved — capturing", completed:"Completed", held:"Captured — held by PayPal", failed:"Failed", cancelled:"Cancelled", clock1_expired:"Clock 1 expired", clock2_expired:"Clock 2 expired" };
+  let windowMs = 6 * 3600_000;
+  const seen = new Set();
+  let data = null;
+
+  function bar(cls, clock, terminal) {
+    if (!clock) return `<span class="tiny">—</span>`;
+    const start = Date.parse(clock.startedAt), dl = Date.parse(clock.deadline);
+    const end = clock.endedAt ? Date.parse(clock.endedAt) : Math.min(Date.now(), dl);
+    const pct = Math.min(100, Math.max(0, ((end - start) / (dl - start)) * 100));
+    const label = clock.endedAt ? `ended ${hhmm(clock.endedAt)}` : terminal ? "stopped" : clock.remainingMs > 0 ? `${mmss(clock.remainingMs)} left` : "expired";
+    return `<div class="bar ${cls}"><i style="width:${pct.toFixed(1)}%"></i></div><div class="tiny">${hhmm(clock.startedAt)} → ${label}</div>`;
+  }
+
+  function render() {
+    if (!data) return;
+    const c = data.counts;
+    $("meta").textContent = `${data.env} · order window ${data.windowHours}h · webhook ${data.webhookVerified ? "verified" : "UNVERIFIED"} · ${new Date(data.now).toLocaleTimeString()}`;
+
+    const conv = c.landed ? Math.round((c.completed / c.landed) * 100) : 0;
+    $("tiles").innerHTML = [
+      ["", c.created, "orders created (clock 1)"],
+      ["", c.donations, "of which donations"],
+      ["", c.landed, "landed on PayPal (clock 2)"],
+      ["", c.approved, "tapped Pay Now"],
+      ["ok", c.completed, "captured"],
+      ["", `${conv}%`, "landed → captured"],
+      ["warn", c.pending, "held / pending review"],
+      ["warn", c.expired, "clock expired"],
+      ["", c.cancelled, "closed window"],
+      ["warn", c.failed_buyer, "buyer funding failed"],
+      ["bad", c.failed_merchant, "YOUR account refused"],
+      ["bad", c.failed_risk, "risk / compliance block"],
+      ["", c.failed_other, "other errors"],
+    ].map(([cls, n, l]) => `<div class="tile ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+
+    // --- Running now: only checkouts whose clocks are still ticking ---
+    const live = data.orders.filter((o) => ["clock1", "clock2", "approved_awaiting_capture"].includes(o.clocks.phase));
+    $("livecount").textContent = live.length;
+    $("live").innerHTML = live.map((o) => {
+      const c1 = o.clocks.clock1, c2 = o.clocks.clock2;
+      const inC2 = !!c2;
+      const active = inC2 ? c2 : c1;
+      const soon = active.remainingMs < 15 * 60_000;
+      const stage = o.clocks.phase === "approved_awaiting_capture" ? "Approved — capturing" : inC2 ? "Clock 2 — buyer on PayPal" : "Clock 1 — waiting for buyer to open";
+      return `<div class="lc">
+        <div class="hd"><code>${esc(o.id)}</code><span class="tiny">${esc(o.kind)} · ${esc(o.amount)}${o.reference ? ` · ${esc(o.reference)}` : ""}</span></div>
+        <div class="big ${inC2 ? "c2" : "c1"} ${soon ? "soon" : ""}">${mmss(active.remainingMs)} left</div>
+        <div class="tiny">${esc(stage)}</div>
+        <div class="row">
+          <span class="k">Clock 1 started</span><span class="v">${hhmm(c1.startedAt)}</span>
+          <span class="k">Clock 1 ends</span><span class="v ${inC2 ? "" : "on"}">${inC2 ? `opened ${hhmm(c1.endedAt)}` : `must open by ${hhmm(c1.deadline)}`}</span>
+          <span class="k">Clock 2 started</span><span class="v">${inC2 ? hhmm(c2.startedAt) : "— (not yet)"}</span>
+          <span class="k">Clock 2 ends</span><span class="v ${inC2 ? "on" : ""}">${inC2 ? `must pay by ${hhmm(c2.deadline)}` : "—"}</span>
+          ${o.approvedAt ? `<span class="k">Pay Now tapped</span><span class="v">${hhmm(o.approvedAt)}</span>` : ""}
+        </div>
+      </div>`;
+    }).join("") || `<div class="empty">Nothing in progress. A checkout appears here the moment a buyer clicks the PayPal button, and leaves when it's captured, cancelled, failed or expired.</div>`;
+
+    const flags = [];
+    if (c.failed_merchant) flags.push(`<b>${c.failed_merchant}</b> capture(s) refused by your receiving account (PAYEE_* errors). This is the "flagged" case — log in to PayPal and check Account Limitations / notifications before sending more traffic.`);
+    if (c.failed_risk) flags.push(`<b>${c.failed_risk}</b> transaction(s) blocked by PayPal risk or compliance. Look at the event feed for the exact issue code.`);
+    if (c.pending) flags.push(`<b>${c.pending}</b> payment(s) captured but <b>held</b> — PayPal is reviewing them. Money hasn't settled yet; the reason is in the feed.`);
+    if (!data.webhookVerified) flags.push(`Webhook signature verification is <b>off</b> (PAYPAL_WEBHOOK_ID not set). Fine for testing, not for live.`);
+    $("flags").innerHTML = flags.map((f) => `<div class="flag">${f}</div>`).join("");
+
+    $("orders").innerHTML = data.orders.map((o) => {
+      const ph = o.clocks.phase;
+      const terminal = ["completed", "held", "failed", "cancelled"].includes(ph);
+      let outcome = "";
+      if (o.status === "COMPLETED") outcome = `captured <code>${esc(o.capture?.id || "")}</code>`;
+      else if (o.status === "PENDING") outcome = `<span class="cat risk">HELD</span> ${esc(o.capture?.pendingReason || "")}`;
+      else if (o.failure) outcome = `<span class="cat ${esc(o.failure.category)}">${esc(o.failure.category.replace("_"," "))}</span><br><code>${esc(o.failure.issue)}</code>`;
+      else if (o.status === "CANCELLED") outcome = `<span class="tiny">buyer closed window</span>`;
+      return `<tr>
+        <td><code>${esc(o.id)}</code>${o.reference ? `<br><span class="tiny">${esc(o.reference)}</span>` : ""}</td>
+        <td><span class="pill ${o.kind === "donation" ? "p-clock2" : "p-cancelled"}">${o.kind === "donation" ? "donation" : "checkout"}</span></td>
+        <td>${esc(o.amount)}</td>
+        <td><span class="pill p-${esc(ph)}">${esc(phaseLabel[ph] || ph)}</span></td>
+        <td>${bar("c1", o.clocks.clock1, terminal)}</td>
+        <td>${bar("c2", o.clocks.clock2, terminal)}</td>
+        <td class="hide-sm">${esc(o.fundingSource || "")}</td>
+        <td>${outcome}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="8" class="tiny">No orders yet. Open the checkout and click the PayPal button.</td></tr>`;
+
+    const feed = $("feed");
+    const atBottom = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 10;
+    for (const e of data.events) {
+      const key = `${e.t}|${e.type}|${e.orderId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const div = document.createElement("div");
+      div.className = `ev ${esc(e.level)}`;
+      div.innerHTML = `<span class="t">${hhmm(e.t)}</span><span class="lv">${esc(e.level)}</span><span><b>${esc(e.type)}</b>${e.orderId ? ` <code>${esc(e.orderId)}</code>` : ""} — ${esc(e.msg)}</span>`;
+      feed.appendChild(div);
+    }
+    while (feed.children.length > 600) feed.removeChild(feed.firstChild);
+    if (atBottom) feed.scrollTop = feed.scrollHeight;
+  }
+
+  let lastT = null;
+  async function poll() {
+    try {
+      const r = await fetch(`__BASE__/api/monitor${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+      if (r.status === 401) { $("meta").textContent = "monitor token required — open __BASE__/monitor?token=YOUR_TOKEN"; return; }
+      const j = await r.json();
+      windowMs = j.windowHours * 3600_000;
+      data = j;
+      render();
+    } catch (e) { $("meta").textContent = "disconnected — retrying…"; }
+  }
+  poll();
+  setInterval(poll, 3000);
+  // Tick the clock bars every second between polls.
+  setInterval(() => { if (!data) return; data.now = new Date().toISOString(); for (const o of data.orders) { for (const k of ["clock1", "clock2"]) { const c = o.clocks[k]; if (c && !c.endedAt && c.remainingMs > 0) c.remainingMs = Math.max(0, c.remainingMs - 1000); } } render(); }, 1000);
+})();
+</script>
+</body>
+</html>
