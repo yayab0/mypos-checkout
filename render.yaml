@@ -37,3 +37,24 @@ services:
         value: "1"
       - key: MYPOS_LANG
         value: EN
+      # ---- PayPal module (/paypal) — all optional; module answers 503 until the two secrets are set ----
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_MONITOR_TOKEN
+        generateValue: true
+      - key: PAYPAL_BRAND_NAME
+        value: Store
+      - key: PAYPAL_CHARITY_NAME
+        sync: false
+      - key: PAYPAL_DEFAULT_CURRENCY
+        value: GBP
+      - key: PAYPAL_ORDER_WINDOW_HOURS
+        value: "6"
+      - key: PAYPAL_DATA_DIR
+        value: /var/data
